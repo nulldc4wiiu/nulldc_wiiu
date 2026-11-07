@@ -467,6 +467,38 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                     vps, rnd_pct, ta_str,
                     arm_pct, aica_pct, vox_pct, voices, snd_pct);
                 fflush(stdout); // once per 1s: keep the log tail intact if the Wii is powered off
+#ifdef __WIIU__
+                {
+                    // the AICA's share split up (nullAICA/aica.cpp); output includes the sound backend's pacing
+                    // waits, which the [audio] line reports on their own
+                    extern u64 AicaProfTicks[4];
+                    printf("[aica-prof] of the emulator thread: sample %.1f%% (voices %.1f%%, cdda %.1f%%, output %.1f%%), "
+                           "timers+interrupts %.1f%%\n",
+                           PERF_TICKS_US(AicaProfTicks[0]) / 1e4 / tdiff, vox_pct,
+                           PERF_TICKS_US(AicaProfTicks[1]) / 1e4 / tdiff, PERF_TICKS_US(AicaProfTicks[2]) / 1e4 / tdiff,
+                           PERF_TICKS_US(AicaProfTicks[3]) / 1e4 / tdiff);
+                    for (int i = 0; i < 4; i++)
+                        AicaProfTicks[i] = 0;
+                }
+                extern bool g_wiiu_prof_on;
+                if (g_wiiu_prof_on)
+                {
+                    // and the SH-4 side's C paths (wiiu/prof_wiiu.h); the rest is translated code
+                    extern u64 g_wiiu_prof[10];
+                    double p[10], sum = 0;
+                    for (int i = 0; i < 10; i++)
+                    {
+                        p[i] = PERF_TICKS_US(g_wiiu_prof[i]) / 1e4 / tdiff;
+                        g_wiiu_prof[i] = 0;
+                    }
+                    for (int i = 0; i < 6; i++)
+                        sum += p[i];
+                    printf("[sh4-prof] of the emulator thread: timeslice %.1f%% (medium incl. arm+aica %.1f, tmu %.1f, "
+                           "pvr %.1f), interrupts %.1f%%, store queue/TA %.1f%% (TA decode %.1f), block lookup+compile %.1f%%, memory "
+                           "handlers read %.1f%% write %.1f%%; translated code and the rest %.1f%%\n", p[0], p[6], p[7],
+                           p[8], p[1], p[2], p[9], p[3], p[4], p[5], 100.0 - sum);
+                }
+#endif
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on
                 hotblocks_dump(tdiff);   // no-op unless the JIT HOTBLOCKS preset is on

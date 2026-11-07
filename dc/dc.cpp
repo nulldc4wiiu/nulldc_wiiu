@@ -474,6 +474,10 @@ void dc_flash_restore_broadcast()
 extern "C" int get_flash_save_preset();   // wii/main.cpp
 extern "C" int get_flash_chip_preset();   // wii/main.cpp
 static bool s_flash_loaded = false;       // LoadBiosFiles found a flash file
+#ifdef __WIIU__
+void wiiu_flash_sync_time(u8 *flash, u32 rtc);
+u32 GetRTC_now();
+#endif
 
 extern "C" void dc_flash_save_at_exit(void)
 {
@@ -587,6 +591,11 @@ void LoadBiosFiles()
 	// FLASH_BROADCAST: the disc is already open (libGDR_Init runs in
 	// plugins_Init, before the first reset), so its IP.BIN can be read here.
 	dc_flash_set_broadcast();
+#ifdef __WIIU__
+	// the BIOS asks for the date when the RTC is far past the time in its flash (wiiu/flash_wiiu.cpp)
+	if (s_flash_loaded)
+		wiiu_flash_sync_time(&flash_b[0], settings.dreamcast.RTC ? settings.dreamcast.RTC : GetRTC_now());
+#endif
 	// FLASH_SAVE: the flash now matches its file (the broadcast patch is
 	// host-side and is undone before a save, so it does not count).
 	flash_b_dirty = false;

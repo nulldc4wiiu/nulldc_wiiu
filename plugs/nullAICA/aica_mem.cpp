@@ -2,6 +2,12 @@
 #include "dsp.h"
 #include "sgc_if.h"
 
+#ifdef __WIIU__
+void aica_channel_write(u32 chan, u32 reg);   // aica.cpp: now, or queued for the mixer (exp_aica_thread)
+#else
+#define aica_channel_write WriteChannelReg8
+#endif
+
 u8* aica_reg;
 u8* aica_ram_l;
 
@@ -48,13 +54,13 @@ void WriteReg(u32 addr, u32 data)
         if (sz == 1)
         {
             WriteMemArr(aica_reg, addr, data, 1);
-            WriteChannelReg8(chan, reg);
+            aica_channel_write(chan, reg);
         }
         else
         {
             WriteMemArr(aica_reg, addr, data, 2);
-            WriteChannelReg8(chan, reg);
-            WriteChannelReg8(chan, reg + 1);
+            aica_channel_write(chan, reg);
+            aica_channel_write(chan, reg + 1);
         }
         return;
     }

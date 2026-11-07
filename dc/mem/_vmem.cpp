@@ -11,6 +11,14 @@
 // ---------------------------------------------------------------------------
 
 #include "_vmem.h"
+#include "wiiu/prof_wiiu.h"
+#ifdef __WIIU__
+// who called the generic write (JIT code or which C function), for the boot-ROM write dump (wiiu/debug_wiiu.cpp)
+void *wiiu_last_writer;
+#define WIIU_NOTE_WRITER() (wiiu_last_writer = __builtin_return_address(0))
+#else
+#define WIIU_NOTE_WRITER() do { } while (0)
+#endif
 #include "dc/aica/aica_if.h"
 #include "dc/pvr/pvr_if.h"
 #include "sh4_mem.h"
@@ -45,7 +53,13 @@ static _vmem_ReadMem32FP*  _vmem_RF32[HANDLER_COUNT];
 static _vmem_WriteMem32FP* _vmem_WF32[HANDLER_COUNT];
 
 // Top-level dispatch table: 256 entries, one per 16 MB page.
+#if defined(__WIIU__)
+// the Wii U loader refuses an RPX whose .bss needs 64 KB alignment (error 160-2203 at launch);
+// the JIT adds the low half of the address when it isn't zero, so 32 bytes only costs an addi
+ALIGN(32) void* _vmem_MemInfo_ptr[0x100];
+#else
 ALIGN(65536) void* _vmem_MemInfo_ptr[0x100];
+#endif
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -84,9 +98,17 @@ static INLINE T fastcall _vmem_readt(u32 addr)
             return (T)_vmem_RF32[id / 4](addr);
         else if (sz == 8)
         {
-            // 64-bit: two consecutive 32-bit reads
+            // 64-bit: two consecutive 32-bit reads, in the order the direct path below gives. On a big-endian
+            // host that puts the word at addr in the high half (the JIT takes it as the first register of the
+            // pair); the little-endian order here swapped every pair of words that a 64-bit fmov copied from the
+            // boot ROM, and the BIOS's soft-reset code, copied that way, ran as garbage (MvC2 after game over).
+#if HOST_ENDIAN == ENDIAN_BIG
+            T rv = (T)((u64)_vmem_RF32[id / 4](addr) << 32);
+            rv  |= (T)_vmem_RF32[id / 4](addr + 4);
+#else
             T rv = (T)_vmem_RF32[id / 4](addr);
             rv  |= (T)((u64)_vmem_RF32[id / 4](addr + 4) << 32);
+#endif
             return rv;
         }
         die("_vmem_readt: invalid size");
@@ -126,8 +148,14 @@ static INLINE void fastcall _vmem_writet(u32 addr, T data)
             _vmem_WF32[id / 4](addr, (u32)data);
         else if (sz == 8)
         {
+            // the same word order as the read above
+#if HOST_ENDIAN == ENDIAN_BIG
+            _vmem_WF32[id / 4](addr,     (u32)((u64)data >> 32));
+            _vmem_WF32[id / 4](addr + 4, (u32)(u64)data);
+#else
             _vmem_WF32[id / 4](addr,     (u32)(u64)data);
             _vmem_WF32[id / 4](addr + 4, (u32)((u64)data >> 32));
+#endif
         }
         else
             die("_vmem_writet: invalid size");
@@ -201,15 +229,21 @@ u8* fastcall _vmem_GetBlockPtr(u32 Address, u32 size)
 // ---------------------------------------------------------------------------
 // Public read/write accessors
 // ---------------------------------------------------------------------------
-u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u8> (addr); }
-u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u16>(addr); }
-u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u32>(addr); }
-u64 fastcall _vmem_ReadMem64 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u64>(addr); }
+u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u8> (addr); }
+u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u16>(addr); }
+u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u32>(addr); }
+u64 fastcall _vmem_ReadMem64 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u64>(addr); }
 
-void fastcall _vmem_WriteMem8  (u32 addr, u8  data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u8> (addr, data); }
-void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u16>(addr, data); }
-void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u32>(addr, data); }
-void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u64>(addr, data); }
+#ifdef WIIU_INSTRUMENT
+u32 g_wr_census_on, g_wr_area[4096];   // wr_census=1: slow-path writes per MB
+#define WR_CENSUS(addr) do { if (g_wr_census_on) g_wr_area[(addr) >> 20]++; } while (0)
+#else
+#define WR_CENSUS(addr) do { } while (0)
+#endif
+void fastcall _vmem_WriteMem8  (u32 addr, u8  data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u8> (addr, data); }
+void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u16>(addr, data); }
+void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u32>(addr, data); }
+void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u64>(addr, data); }
 
 // ---------------------------------------------------------------------------
 // Default "not mapped" handlers

@@ -393,6 +393,13 @@ extern "C" void ccall_census_dump(double seconds, double vbs)
 
 	printf("[CC] %.2fs  %.0f call-outs/s total  (%.1f vbl/s)\n",
 	       seconds, total / seconds, vbs);
+#ifdef __WIIU__
+	{
+		extern u32 g_fpscr_bank_swaps;
+		printf("[CC]   (fpscr syncs that swap FPU banks: %.0f/s)\n", g_fpscr_bank_swaps / seconds);
+		g_fpscr_bank_swaps = 0;
+	}
+#endif
 
 	for (u32 a = 0; a < n; a++)
 	{

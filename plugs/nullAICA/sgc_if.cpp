@@ -8,6 +8,9 @@
 extern u64 AicaVoxTicks;
 extern u32 AicaVoiceSum;
 extern u32 AicaSampleCount;
+#ifdef __WIIU__
+#include "aica.h"   // AicaProfTicks
+#endif
 
 #if HOST_OS == OS_WII
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them.
@@ -18,7 +21,11 @@ extern u32 AicaSampleCount;
 #  undef LITTLE_ENDIAN
 #endif
 #include <ogc/lwp_watchdog.h>   // gettime() - inline mftb read, no call
+#ifdef __WIIU__
+#define SGC_PERF_TICKS() gettime_fast()
+#else
 #define SGC_PERF_TICKS() gettime()
+#endif
 #else
 #define SGC_PERF_TICKS() ((u64)0)
 #endif
@@ -1120,6 +1127,10 @@ void WriteChannelReg8(u32 channel, u32 reg)
     Chans[channel].RegWrite(reg);
 }
 
+#ifdef __WIIU__
+void aica_clear_looped(u32 chan);   // aica.cpp: now, or queued for the mixer
+void aica_clear_looped_now(u32 chan) { Chans[chan].loop.looped = 0; }
+#endif
 void ReadCommonReg(u32 reg, bool byte)
 {
     switch (reg)
@@ -1135,7 +1146,11 @@ void ReadCommonReg(u32 reg, bool byte)
             CommonData->EG  = Chans[chan].AEG.GetValue();
             CommonData->SGC = Chans[chan].AEG.state;
             if (!(byte && reg == 0x2810))
+#ifdef __WIIU__
+                aica_clear_looped(chan);
+#else
                 Chans[chan].loop.looped = 0;
+#endif
         }
         break;
     case 0x2814: case 0x2815:
@@ -1181,6 +1196,45 @@ extern "C" int get_cdda_preset();
 #define CDDA_FIX() (get_cdda_preset() != 0)
 void FASTCALL gdrom_get_cdda(s16* sector);
 
+#ifdef __WIIU__
+// exp_aica_thread: disc access stays on the emulator thread, sectors reach the mixer through a small ring
+int g_exp_aica_thread;
+static s16 cdda_ring[8][CDDA_SIZE];
+static volatile u32 cdda_ring_w, cdda_ring_r;
+void aica_cdda_prefetch()
+{
+    if (cdda_ring_w - cdda_ring_r >= 8)
+        return;
+    s16 *s = cdda_ring[cdda_ring_w & 7];
+    if (CDDA_FIX())
+    {
+        gdrom_get_cdda(s);
+        u8 *b = (u8 *)s;
+        for (u32 i = 0; i < sizeof(cdda_ring[0]); i += 2)
+        {
+            u8 t = b[i]; b[i] = b[i + 1]; b[i + 1] = t;
+        }
+    }
+    else
+        memset(s, 0, sizeof(cdda_ring[0]));
+    __asm__ volatile("sync" : : : "memory");
+    cdda_ring_w = cdda_ring_w + 1;
+}
+static bool aica_cdda_take(s16 *out)
+{
+    if (!g_exp_aica_thread)
+        return false;
+    if (cdda_ring_r == cdda_ring_w)
+        memset(out, 0, sizeof(cdda_ring[0]));
+    else
+    {
+        memcpy(out, cdda_ring[cdda_ring_r & 7], sizeof(cdda_ring[0]));
+        cdda_ring_r = cdda_ring_r + 1;
+    }
+    return true;
+}
+#endif
+
 void AICA_Sample()
 {
     const bool fast   = g_aica_fast_preset != 0;
@@ -1205,7 +1259,15 @@ void AICA_Sample()
     // CDDA input — refill the sector buffer every 588 stereo frames.
     if (cdda_index >= CDDA_SIZE)
     {
+#ifdef __WIIU__
+        const u64 t_cdda = SGC_PERF_TICKS();
+#endif
         cdda_index = 0;
+#ifdef __WIIU__
+        if (aica_cdda_take(cdda_sector))
+            ;   // exp_aica_thread: the emulator thread read and swapped it (aica_cdda_prefetch)
+        else
+#endif
         if (CDDA_FIX())
         {
             // gdrom_get_cdda gives the raw Red Book sector (s16 L/R
@@ -1237,6 +1299,9 @@ void AICA_Sample()
                 break;
             }
         }
+#ifdef __WIIU__
+        AicaProfTicks[AICA_PROF_CDDA] += SGC_PERF_TICKS() - t_cdda;
+#endif
     }
     s32 EXTS0L = cdda_sector[cdda_index];
     s32 EXTS0R = cdda_sector[cdda_index + 1];
@@ -1315,5 +1380,11 @@ void AICA_Sample()
     pl = mixl;
     pr = mixr;
 
+#ifdef __WIIU__
+    const u64 t_out = SGC_PERF_TICKS();
     wii_WriteSample((s16)mixr, (s16)mixl);
+    AicaProfTicks[AICA_PROF_OUTPUT] += SGC_PERF_TICKS() - t_out;
+#else
+    wii_WriteSample((s16)mixr, (s16)mixl);
+#endif
 }

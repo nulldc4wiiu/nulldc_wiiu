@@ -2,6 +2,7 @@
 //needs a rewrite and check varius things all around
 
 #include "types.h"
+#include "wiiu/prof_wiiu.h"
 #include "intc.h"
 #include "dc/sh4/rec_v2/ccall_census.h"
 #include "tmu.h"
@@ -295,6 +296,7 @@ int UpdateINTC_pending()
 int UpdateINTC()
 {
 	CCALL(CC_INTERRUPT);
+	WIIU_PROF(PROF_INTERRUPT);
 	u32 intped=interrupt_vpend&interrupt_vmask;
 	if (intped<=decoded_srimask)
 		return 0;

@@ -341,7 +341,11 @@ public:
 						}
 
 						//printf("End list %X\n",CurrentList);
+#ifndef __WIIU__
 						spg_SchedListEndIrq(CurrentList);
+#endif
+						// (on the Wii U this parser replays the TA input on the worker core, after the fact; the
+						// emulator thread's scanner raised the interrupt as the block arrived, wiiu/render_gx2.cpp)
 						ListIsFinished[CurrentList]=true;
 						CurrentList=ListType_None;
 						VerxexDataFP=0;
@@ -1155,7 +1159,11 @@ public:
 						}
 
 						//printf("End list %X\n",CurrentList);
+#ifndef __WIIU__
 						spg_SchedListEndIrq(CurrentList);
+#endif
+						// (on the Wii U this parser replays the TA input on the worker core, after the fact; the
+						// emulator thread's scanner raised the interrupt as the block arrived, wiiu/render_gx2.cpp)
 						ListIsFinished[CurrentList]=true;
 						CurrentList=ListType_None;
 						data+=SZ32;

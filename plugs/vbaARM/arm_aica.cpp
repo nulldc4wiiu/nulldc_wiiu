@@ -19,7 +19,11 @@ extern u64 AicaTicks;
 #  undef LITTLE_ENDIAN
 #endif
 #include <ogc/lwp_watchdog.h>   // gettime() - inline mftb read, no call
+#ifdef __WIIU__
+#define ARM_PERF_TICKS() gettime_fast()
+#else
 #define ARM_PERF_TICKS() gettime()
+#endif
 #else
 #define ARM_PERF_TICKS() ((u64)0)
 #endif
@@ -54,6 +58,17 @@ extern "C" int get_arm7_batch_preset();
 static u32 aica_sample_cycles = SH4_CLOCK / 44100;
 static int aica_clock_mhz     = 200;
 
+#ifdef __WIIU__
+// exp_arm_thread: the ARM's share of this many AICA samples, on the sound thread
+void arm_run_samples(u32 samples)
+{
+	int stage = get_arm7_speed_preset();
+	if (stage < 0) stage = 0;
+	if (stage > 3) stage = 3;
+	arm_Run((u32)(((u64)aica_sample_cycles * samples / arm_sh4_bias) >> stage));
+}
+#endif
+
 //Mainloop
 //
 // Drives the ARM7 and the AICA sample generator together from the SH4
@@ -63,12 +78,20 @@ static int aica_clock_mhz     = 200;
 // rather than a fixed 32x loop, then run the ARM for this slice. The ARM and
 // AICA therefore stay in lockstep instead of being bulk-updated independently
 // (and AICA is no longer stepped from the video/audio frame).
+#ifdef __WIIU__
+extern int g_exp_arm_thread;
+bool aica_sound_thread_up();
+#endif
 void FASTCALL armUpdateARM(u32 Cycles)
 {
 	static u32 aica_cycle_acc = 0;
 	static u32 arm_batch_acc = 0;     // SH4 cycles owed to the ARM (arm7_batch > 1)
 	static u32 arm_batch_calls = 0;
 
+#ifdef __WIIU__
+	if (g_exp_arm_thread && aica_sound_thread_up())
+		goto arm_deferred;   // the sound thread runs it, sample by sample (arm_run_samples)
+#endif
 	// Run the ARM7 for this slice (cycle budget scaled by arm_sh4_bias,
 	// further divided by the per-game arm7_speed preset stage). The clock reads
 	// bracket the run itself, so a call that only defers cycles (arm7_batch > 1)

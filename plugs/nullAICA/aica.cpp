@@ -95,9 +95,21 @@ void update_arm_interrupts()
 }
 
 // Returns whether an SH4 interrupt is pending (Flycast's shape; AICA_RACE uses it).
+#ifdef __WIIU__
+bool aica_on_sound_thread();
+bool aica_defer_reg(u32 reg, u32 data, u32 sz);
+static volatile bool sh4_ints_dirty;
+#endif
 bool UpdateSh4Ints()
 {
     u32 p_ints = MCIEB->full & MCIPD->full;
+#ifdef __WIIU__
+    if (aica_on_sound_thread())
+    {
+        sh4_ints_dirty = true;   // the SH4's interrupt state belongs to the emulator thread (aica_poll_ints)
+        return p_ints != 0;
+    }
+#endif
     if (p_ints)
     {
         if ((*aica_params.SB_ISTEXT & SH4_IRQ_BIT) == 0)
@@ -205,6 +217,10 @@ void FASTCALL UpdateAICA(u32 Samples)
 template<u32 sz>
 void WriteAicaReg(u32 reg, u32 data)
 {
+#ifdef __WIIU__
+    if (aica_defer_reg(reg, data, sz))
+        return;
+#endif
     switch (reg)
     {
     case SCIPD_addr:
@@ -313,24 +329,209 @@ void AICA_Init()
     //printf("[AICA] AICA_Init: done\n");
 }
 
+#ifdef __WIIU__
+void aica_thread_stop();
+#endif
 void AICA_Term()
 {
+#ifdef __WIIU__
+    aica_thread_stop();
+#endif
     sgc_Term();
 }
 
 // Steps one AICA sample, ticks timers, sets SAMPLE_DONE, and updates the
 // ARM7 / SH4 interrupt lines. Driven once per sample from the SH4 timeslice
 // (armUpdateARM) — see [[aica-arm-timing]].
+#ifdef __WIIU__
+// exp_aica_thread (1: core 0, 2: core 2): mixing runs on another core, at most AICA_AHEAD samples behind. Timers and
+// interrupts stay here. The mixer is the only thread that changes channel state: a channel register write stores its
+// value at once (reads must see it) and queues its processing, tagged with the sample it belongs to, so voices key on
+// and off at the same sample as without the thread. Reads of channel position lag by up to AICA_AHEAD samples.
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
+extern int g_exp_aica_thread;
+int g_exp_arm_thread;   // exp_arm_thread (needs exp_aica_thread): timers and the ARM7 run on the sound thread too
+void arm_SetEnabled(bool enabled);
+void aica_cdda_prefetch();
+static const u32 AICA_AHEAD = 512;
+static const u32 AICA_OPS = 8192;
+void aica_clear_looped_now(u32 chan);
+// reg 0xFFFF: clear the channel's loop flag; 0xFFFE: WriteAicaReg (chan the register, data, size in sz); 0xFFFD: ARM enable
+static struct { u32 sample; u16 chan, reg; u32 data, sz; } aica_ops[AICA_OPS];
+static volatile u32 ops_w, ops_r;
+static volatile u32 aica_pending, aica_done;
+static volatile bool aica_stop, aica_started;
+static OSThread aica_thread;
+static void aica_apply_ops(u32 sample)
+{
+    while (ops_r != ops_w && (s32)(aica_ops[ops_r % AICA_OPS].sample - sample) <= 0)
+    {
+        const auto &op = aica_ops[ops_r % AICA_OPS];
+        if (op.reg == 0xFFFF)
+            aica_clear_looped_now(op.chan);
+        else if (op.reg == 0xFFFE)
+        {
+            if (op.sz == 1)
+                WriteAicaReg<1>(op.chan, op.data);
+            else
+                WriteAicaReg<2>(op.chan, op.data);
+        }
+        else if (op.reg == 0xFFFD)
+            arm_SetEnabled(op.data != 0);
+        else
+            WriteChannelReg8(op.chan, op.reg);
+        ops_r = ops_r + 1;
+    }
+}
+static void aica_queue(u32 chan, u32 reg, u32 data = 0, u32 sz = 0)
+{
+    while (ops_w - ops_r >= AICA_OPS)
+        OSSleepTicks(OSMicrosecondsToTicks(100));
+    auto &op = aica_ops[ops_w % AICA_OPS];
+    op.sample = aica_pending;
+    op.chan = (u16)chan;
+    op.reg = (u16)reg;
+    op.data = data;
+    op.sz = sz;
+    __asm__ volatile("sync" : : : "memory");
+    ops_w = ops_w + 1;
+}
+bool aica_on_sound_thread() { return aica_started && OSGetCurrentThread() == &aica_thread; }
+// exp_arm_thread: registers that drive the ARM side go through the queue from the emulator thread. The SH4's own
+// interrupt clears (MCIRE, MCIEB) stay immediate, or its handler would re-enter until the queue caught up
+bool aica_defer_reg(u32 reg, u32 data, u32 sz)
+{
+    if (!g_exp_arm_thread || !aica_started || aica_on_sound_thread())
+        return false;
+    if (reg != SCIPD_addr && reg != SCIRE_addr && reg != SCIEB_addr && reg != TIMER_A && reg != TIMER_B && reg != TIMER_C)
+        return false;
+    aica_queue(reg, 0xFFFE, data, sz);
+    return true;
+}
+void aica_arm_enable(bool on)
+{
+    if (g_exp_arm_thread && aica_started)
+        aica_queue(0, 0xFFFD, on);
+    else
+        arm_SetEnabled(on);
+}
+bool aica_sound_thread_up() { return aica_started; }
+void aica_poll_ints()
+{
+    if (sh4_ints_dirty)
+    {
+        sh4_ints_dirty = false;
+        UpdateSh4Ints();
+    }
+}
+void aica_channel_write(u32 chan, u32 reg)
+{
+    if (aica_started && !aica_on_sound_thread())
+        aica_queue(chan, reg);
+    else
+        WriteChannelReg8(chan, reg);
+}
+void aica_clear_looped(u32 chan)
+{
+    if (aica_started && !aica_on_sound_thread())
+        aica_queue(chan, 0xFFFF);
+    else
+        aica_clear_looped_now(chan);
+}
+void arm_run_samples(u32 samples);   // arm_aica.cpp
+static u32 arm_due;
+static int aica_main(int, const char **)
+{
+    while (!aica_stop)
+    {
+        while (aica_done != aica_pending)
+        {
+            aica_apply_ops(aica_done);
+            AICA_Sample();
+            if (g_exp_arm_thread)
+            {
+                SCIPD->SAMPLE_DONE = 1;
+                for (int i = 0; i < 3; i++)
+                    timers[i].StepTimer();
+                update_arm_interrupts();
+                if (++arm_due == 8)
+                {
+                    arm_run_samples(arm_due);
+                    arm_due = 0;
+                }
+            }
+            aica_done = aica_done + 1;
+        }
+        aica_apply_ops(aica_done);
+        OSSleepTicks(OSMicrosecondsToTicks(100));
+    }
+    return 0;
+}
+static void aica_thread_step()
+{
+    if (!aica_started)
+    {
+        static u8 stack[64 * 1024] __attribute__((aligned(16)));
+        aica_started = true;
+        // below the GX2 thread: CafeOS doesn't time-slice, and with the ARM7 this thread can stay busy
+        OSCreateThread(&aica_thread, aica_main, 0, nullptr, stack + sizeof(stack), sizeof(stack), 18,
+                       g_exp_aica_thread == 2 ? OS_THREAD_ATTRIB_AFFINITY_CPU2 : OS_THREAD_ATTRIB_AFFINITY_CPU0);
+        OSSetThreadName(&aica_thread, "nullDC AICA");
+        OSResumeThread(&aica_thread);
+        printf("[aica] mixing on core %d\n", g_exp_aica_thread == 2 ? 2 : 0);
+    }
+    if (aica_pending % 588 == 0)
+        aica_cdda_prefetch();
+    while (aica_pending - aica_done >= AICA_AHEAD)
+        OSSleepTicks(OSMicrosecondsToTicks(100));
+    aica_pending = aica_pending + 1;
+}
+void aica_thread_stop()
+{
+    if (aica_started)
+    {
+        aica_stop = true;
+        OSJoinThread(&aica_thread, nullptr);
+        aica_started = false;
+    }
+}
+#endif
+#ifdef __WIIU__
+// where an AICA sample's time goes, for the [aica-prof] line next to the speed report (SPG.cpp); the rest of
+// AicaTicks is AICA_Sample's own mixing and the time-step loop
+u64 AicaProfTicks[AICA_PROF_COUNT];
+#endif
+
 void libAICA_TimeStep()
 {
+#ifdef __WIIU__
+    const u64 t0 = gettime_fast();
+#endif
+#ifdef __WIIU__
+    if (g_exp_aica_thread)
+    {
+        aica_thread_step();
+        if (g_exp_arm_thread)
+            return;
+    }
+    else
+#endif
     AICA_Sample();
     SCIPD->SAMPLE_DONE = 1;
+#ifdef __WIIU__
+    const u64 t1 = gettime_fast();
+    AicaProfTicks[AICA_PROF_SAMPLE] += t1 - t0;
+#endif
 
     for (int i = 0; i < 3; i++)
         timers[i].StepTimer();
 
     update_arm_interrupts();
     UpdateSh4Ints();
+#ifdef __WIIU__
+    AicaProfTicks[AICA_PROF_TIMERS_INTS] += gettime_fast() - t1;
+#endif
 
 #if AICA_RATE_DIAG
     // Off by default: even with the printf commented out, this ran a gettime()

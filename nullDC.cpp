@@ -115,6 +115,11 @@ extern "C" void dc_elf_pre_run_hook()
 {
 	if (g_elf_pending)
 	{
+		// the hard reset before this hook zeroed RAM, so load the segments again
+		extern char selectedFilePath[512];
+		u32 entry = 0;
+		if (elf_load(selectedFilePath, &entry))
+			g_elf_entry = entry;
 		elf_apply_entry(g_elf_entry);
 		g_elf_pending = false;
 

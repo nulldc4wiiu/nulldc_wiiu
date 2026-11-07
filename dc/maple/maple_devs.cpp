@@ -235,16 +235,81 @@ struct maple_sega_controller: maple_base
 struct maple_sega_vmu: maple_base
 {
 	FILE* file;
+#ifdef __WIIU__
+	char path[512];   // the file is only open while it's read or written (see OnSetup)
+#endif
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[48*32];
 	
+	// a freshly formatted card (mc.pp.se/dc/vms/flashmem.html): root block 255, FAT in 254, a 13-block
+	// directory from 253 down to 241, 200 free user blocks; 16-bit fields little-endian
+	void format_vmu()
+	{
+		memset(flash_data,0,sizeof(flash_data));
+		u8* root=&flash_data[255*512];
+		memset(root,0x55,16);
+		const u8 bcd_time[8]={0x20,0x26,0x11,0x04,0x12,0x00,0x00,0x03};   // a fixed date; games only display it
+		memcpy(root+0x30,bcd_time,8);
+		auto le16=[](u8* at,u16 v){ at[0]=(u8)v; at[1]=(u8)(v>>8); };
+		le16(root+0x46,254);   // FAT location
+		le16(root+0x48,1);     // FAT size
+		le16(root+0x4a,253);   // directory location
+		le16(root+0x4c,13);    // directory size
+		le16(root+0x4e,0);     // icon shape
+		le16(root+0x50,200);   // user blocks
+		u8* fat=&flash_data[254*512];
+		for (u32 b=0;b<256;b++)
+			le16(fat+b*2,0xfffc);                   // free
+		for (u32 b=253;b>241;b--)
+			le16(fat+b*2,(u16)(b-1));               // directory chain 253 -> 241
+		le16(fat+241*2,0xfffa);
+		le16(fat+254*2,0xfffa);                     // the FAT itself
+		le16(fat+255*2,0xfffa);                     // the root block
+	}
+
 	virtual void OnSetup()
 	{
 		memset(flash_data,0,sizeof(flash_data));
 		memset(lcd_data,0,sizeof(lcd_data));
 		wchar temp[512];
+#ifdef __WIIU__
+		// next to the BIOS files: a bare name has no writable directory to land in on a Wii U
+		{
+			char name[64];
+			sprintf(name,"data/vmu_save_%s.bin",logical_port);
+			char* p=GetEmuPath(name);
+			snprintf(path,sizeof(path),"%s",p);
+			free(p);
+		}
+		// The devices get set up twice and the first set is never freed, so a file held open here made the
+		// second open fail on a console (Cemu allows it), leaving empty 0-byte saves. Read it and close it;
+		// a missing or short file becomes a full-size blank one, so each write can seek into it.
+		file=0;
+		FILE* f=fopen(path,"rb");
+		const size_t got=f ? fread(flash_data,1,sizeof(flash_data),f) : 0;
+		if (f) fclose(f);
+		// an all-zero card is one an earlier build created unformatted (Soulcalibur then reports no free space)
+		bool blank=true;
+		for (size_t i=0;i<sizeof(flash_data) && blank;i++)
+			blank=flash_data[i]==0;
+		if (got!=sizeof(flash_data) || blank)
+		{
+			printf("vmu save file \"%s\": %s, writing a freshly formatted one\n",path,!f ? "missing" : blank ? "blank" : "short");
+			format_vmu();
+			f=fopen(path,"wb");
+			if (f)
+			{
+				fwrite(flash_data,1,sizeof(flash_data),f);
+				fclose(f);
+			}
+			else
+				printf("Failed to create vmu save file \"%s\"\n",path);
+		}
+		return;
+#else
 		sprintf(temp,"vmu_save_%s.bin",logical_port);
+#endif
 		file=fopen(temp,"rb+");
 		if (!file)
 		{
@@ -458,6 +523,14 @@ struct maple_sega_vmu: maple_base
 						u32 write_len=r_count();
 						rptr(&flash_data[write_adr],write_len);
 
+#ifdef __WIIU__
+						if (FILE* f=fopen(path,"rb+"))
+						{
+							fseek(f,write_adr,SEEK_SET);
+							fwrite(&flash_data[write_adr],1,write_len,f);
+							fclose(f);
+						}
+#else
 						if (file)
 						{
 							fseek(file,write_adr,SEEK_SET);
@@ -468,6 +541,7 @@ struct maple_sega_vmu: maple_base
 						{
 							printf("Failed to save vmu %s data\n",logical_port);
 						}
+#endif
 						return MDRS_DeviceReply;//just ko
 					}
 					break;

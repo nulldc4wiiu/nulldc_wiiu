@@ -190,10 +190,20 @@ static bool         s_cache_dirty = true;
 // preset is on, and reuses these two buffers rather than adding 4 MB of its
 // own. arm_Reset() latches one engine and flushes both (s_cache_dirty makes
 // this engine rebuild its tables before its next run).
+#if defined(__WIIU__)
+#include "wiiu_codegen.h"
+#endif
 void arm7_cached_borrow_buffers(u8** code, u32* code_bytes, void*** entries, u32* entry_count)
 {
+#if defined(__WIIU__)
+	// the JIT's code has to run from the codegen area; the interpreter keeps ARM7_CACHE
+	static u8* jit_code = (u8*)wiiu_codegen_alloc((u32)sizeof(ARM7_CACHE), "arm7 jit");
+	*code        = jit_code;
+	*code_bytes  = jit_code ? (u32)sizeof(ARM7_CACHE) : 0;
+#else
 	*code        = (u8*)ARM7_CACHE;
 	*code_bytes  = (u32)sizeof(ARM7_CACHE);
+#endif
 	*entries     = (void**)ARM7_ENTRYPOINTS;
 	*entry_count = ARM7_EP_SIZE;
 }

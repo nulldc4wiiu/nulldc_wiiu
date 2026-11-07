@@ -202,6 +202,14 @@ static void CCN_CCR_write(u32 value)
     // Log cache enable state changes
     if (temp.ICE != CCN_CCR.ICE)
         printf("CCN: I-cache %s (pc=%08X)\n", temp.ICE ? "enabled" : "disabled", curr_pc);
+#ifdef __WIIU__
+        // a game's soft reset starts this way: with reset_trace=1 in wiiu.cfg, log what the JIT compiles next
+        // (found the swapped 64-bit handler reads that broke MvC2's restart; see _vmem.cpp)
+        extern u32 wiiu_compile_trace;
+        extern int wiiu_reset_trace;
+        if (!temp.ICE && wiiu_reset_trace)
+            wiiu_compile_trace = 400;
+#endif
     if (temp.OCE != CCN_CCR.OCE)
         printf("CCN: O-cache %s (pc=%08X)\n", temp.OCE ? "enabled" : "disabled", curr_pc);
 

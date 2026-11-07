@@ -64,7 +64,7 @@ void DecodedBlock::Setup(u32 rpc)
 // (CvS2 has 53 of those), and not Reicast's half-block hashes (one matched
 // plain function returns). Word 0 = length.
 // ----------------------------------------------------------------------------
-#define IDLE_KAMUI_MAX 16
+#define IDLE_KAMUI_MAX 20
 static const u16 idle_kamui[][IDLE_KAMUI_MAX + 1] = {
 	// Hook 7: CvS2, Spider-Man, Project Justice, Power Stone 2, Donald Duck, Rayman 2, Re-Volt, Ecco, DOA2.
 	{ 14, 0x4D0B, 0xE407, 0x63F2, 0x6232, 0x72FF, 0x2322, 0x53F1, 0x6232, 0x32E0, 0x8B03,
@@ -75,7 +75,13 @@ static const u16 idle_kamui[][IDLE_KAMUI_MAX + 1] = {
 	// Hooks 7 and 12, other registers: Quake III Arena, Phantasy Star Online Ver. 2.
 	{ 16, 0x4E0B, 0xE407, 0x4E0B, 0xE40C, 0x62F2, 0x6322, 0x73FF, 0x2232, 0x52F1, 0x6322, 0x33D0, 0x8B03,
 	  0x61F2, 0x6312, 0x2338, 0x8BEF },
+	// Soulcalibur (USA), found with the Wii U census in its fights (~10% of block entries): call a hook, wait
+	// for the frame counter to pass a target or a flag to clear. 8C2247F8..8C22481E; IDLE_ANY marks the two
+	// words of the exit path, which the census didn't show.
+	{ 20, 0xD321, 0x6232, 0x420B, 0x5431, 0xD120, 0x6312, 0xD020, 0x6202, 0xD11B, 0x323C, 0x7201, 0x6312,
+	  0x3326, 0x8B01, 0xFFFF, 0xFFFF, 0xD318, 0x6232, 0x2228, 0x8BEB },
 };
+#define IDLE_ANY 0xFFFF   // a word the match doesn't check
 #define IDLE_KAMUI_FORMS (sizeof(idle_kamui) / sizeof(idle_kamui[0]))
 
 // The form whose loop this 4-opcode block closes, or -1.
@@ -87,7 +93,7 @@ static int idle_kamui_form(u32 addr, u32 opcodes)
 	{
 		const u32 n = idle_kamui[f][0];
 		u32 i = n;
-		while (i > 0 && ReadMem16(addr + 6 - (n - i) * 2) == idle_kamui[f][i])
+		while (i > 0 && (idle_kamui[f][i] == IDLE_ANY || ReadMem16(addr + 6 - (n - i) * 2) == idle_kamui[f][i]))
 			i--;
 		if (i == 0)
 			return (int)f;
@@ -302,8 +308,25 @@ static void dec_DynamicSet(u32 regbase,u32 offs=0)
 		block.Emit(shop_jdyn,reg_pc_dyn,mk_reg((Sh4RegType)regbase),mk_imm(offs));
 }
 
+// exp_fuse (Wii U experiment, wiiu.cfg): an unconditional forward bra doesn't end the block; decoding carries on at
+// the target after the delay slot, saving the next block's prologue and link. Only forward, so loops and the idle
+// rules, which match whole small blocks, stay as they were.
+extern "C" int g_exp_fuse;
+int g_exp_fuse;
+static u32 fused_first_end;   // where the block's first contiguous run ended (sh4_code_size), 0: not fused
 static void dec_End(u32 dst,BlockEndType flags,bool delay)
 {
+	if (g_exp_fuse && flags == BET_StaticJump && delay && dst > state.cpu.rpc && block.opcodes < 48 &&
+	    !state.ngen.OnlyDynamicEnds && !state.cpu.is_delayslot)
+	{
+		if (!fused_first_end)
+			fused_first_end = state.cpu.rpc + 4;
+		state.NextOp=NDO_Delayslot;
+		state.DelayOp=NDO_Jump;
+		state.JumpOp=NDO_NextOp;
+		state.JumpAddr=dst;
+		return;
+	}
 	if (state.ngen.OnlyDynamicEnds && flags == BET_StaticJump)
 	{
 		block.Emit(shop_mov32,mk_reg(reg_nextpc),mk_imm(dst));
@@ -1518,6 +1541,7 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 		case NDO_Jump:
 			state.NextOp=state.JumpOp;
 			state.cpu.rpc=state.JumpAddr;
+			state.cpu.is_delayslot=false;
 			break;
 
 		case NDO_End:
@@ -1526,7 +1550,8 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 	}
 
 _end:
-	block.sh4_code_size=state.cpu.rpc-block.start;
+	block.sh4_code_size=(fused_first_end ? fused_first_end : state.cpu.rpc)-block.start;
+	fused_first_end=0;
 	block.NextBlock=state.NextAddr;
 	block.BranchBlock=state.JumpAddr;
 	block.BlockType=state.BlockType;

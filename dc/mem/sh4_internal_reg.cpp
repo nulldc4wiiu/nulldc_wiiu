@@ -679,6 +679,9 @@ void FASTCALL WriteMem_area7(u32 addr, T data)
 // Only active when CCN_CCR.ORA bit is set.
 // ---------------------------------------------------------------------------
 
+#ifdef WIIU_INSTRUMENT
+u32 g_ocr_max;   // highest on-chip RAM offset written (wr_census line): the fastmem map doesn't mirror
+#endif
 template <u32 sz, class T>
 T FASTCALL ReadMem_area7_OCR_T(u32 addr)
 {
@@ -687,9 +690,16 @@ T FASTCALL ReadMem_area7_OCR_T(u32 addr)
 
 	u32 ofs = addr & OnChipRAM_MASK;
 
+#ifdef __WIIU__
+	// laid out like main RAM (words native, halfwords ^2, bytes ^3), so fastmem can map it
+	if (sz == 1) return (T)OnChipRAM[ofs ^ 3];
+	if (sz == 2) return (T)*(u16*)&OnChipRAM[ofs ^ 2];
+	if (sz == 4) return (T)*(u32*)&OnChipRAM[ofs];
+#else
 	if (sz == 1) return (T)OnChipRAM[ofs];
 	if (sz == 2) return (T)host_to_le<sz>(*(u16*)&OnChipRAM[ofs]);
 	if (sz == 4) return (T)host_to_le<sz>(*(u32*)&OnChipRAM[ofs]);
+#endif
 
 	return (T)0xDE;
 }
@@ -702,9 +712,22 @@ void FASTCALL WriteMem_area7_OCR_T(u32 addr, T data)
 
 	u32 ofs = addr & OnChipRAM_MASK;
 
+#ifdef __WIIU__
+#ifdef WIIU_INSTRUMENT
+	{
+		const u32 at = addr & 0x03FFFFFF;
+		if (at > g_ocr_max)
+			g_ocr_max = at;
+	}
+#endif
+	if (sz == 1)      OnChipRAM[ofs ^ 3]            = (u8)data;
+	else if (sz == 2) *(u16*)&OnChipRAM[ofs ^ 2]    = (u16)data;
+	else if (sz == 4) *(u32*)&OnChipRAM[ofs]        = (u32)data;
+#else
 	if (sz == 1)      OnChipRAM[ofs]               = (u8)data;
 	else if (sz == 2) *(u16*)&OnChipRAM[ofs]        = (u16)host_to_le<sz>((u32)data);
 	else if (sz == 4) *(u32*)&OnChipRAM[ofs]        = host_to_le<sz>((u32)data);
+#endif
 }
 
 

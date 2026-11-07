@@ -1,6 +1,9 @@
 // nullAICA.cpp : Defines the entry point for the DLL application.
 //
 
+#ifdef __WIIU__
+void aica_arm_enable(bool on);   // plugs/nullAICA/aica.cpp
+#endif
 #include "vbaARM.h"
 #include "arm_aica.h"
 #include "arm7.h"
@@ -76,7 +79,11 @@ void FASTCALL armReset(bool Manual)
 void FASTCALL SetResetState(u32 state)
 {
 //	printf("SetResetState %d\n",state);
+#ifdef __WIIU__
+	aica_arm_enable(state==0);
+#else
 	arm_SetEnabled(state==0);
+#endif
 }
 //Give to the emu pointers for the PowerVR interface
 EXPORT void EXPORT_CALL armGetInterface(plugin_interface* info)

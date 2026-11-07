@@ -1,7 +1,13 @@
 #pragma once
+
 #include "nullAICA.h"
 #include "wii_audiostream.h"
 #include "assert.h"
+
+#ifdef __WIIU__
+enum { AICA_PROF_SAMPLE, AICA_PROF_CDDA, AICA_PROF_OUTPUT, AICA_PROF_TIMERS_INTS, AICA_PROF_COUNT };
+extern u64 AicaProfTicks[AICA_PROF_COUNT];
+#endif
 
 #define SCIEB_addr  0x289C
 #define SCIPD_addr  (0x289C+4)

@@ -60,6 +60,9 @@ void ppc_call(void* funct);
 void ppc_jump(void* funct);
 u32  ppc_addr_high(u32 rD, void* ptr);
 void make_address_range_executable(void* addr, u32 size);
+#if defined(__WIIU__)
+#include "wiiu_codegen.h"
+#endif
 extern u32* emit_ptr;                   // driver.cpp: redirects ppc_emit output
 
 // ── ARM7 core state (arm7.cpp / arm_mem.cpp) ─────────────────────────────────
@@ -116,7 +119,8 @@ static void*  s_stub_exit;
 static void*  s_stub_link;
 static void*  s_stub_icmiss;
 static bool   s_link;               // arm7_jit >= 2: static exits patched into direct branches
-static bool   s_retcache;           // arm7_jit >= 3: emitted dispatch + per-site return cache
+static bool   s_retcache;           // arm7_jit >= 3: per-site return cache
+static bool   s_emit_dispatch;      // arm7_jit >= 3: DISPATCH() in emitted code
 static bool   s_inline_blk;         // arm7_jit >= 4: LDM/STM inline for ARAM addresses
 static u32    s_slices;             // arm_jit_run calls: the clock for return-cache demotion
 
@@ -781,6 +785,9 @@ static void* jit_link_c(u32 pc, s32 budget, u32* lr)
 		u32* site = lr - 3;
 		u32* link = (u32*)code - ((u32*)code)[-2];
 		s32 d = (s32)((u8*)link - (u8*)site);
+#if defined(__WIIU__)
+		wiiu_codegen_write_begin();
+#endif
 		*site = 0x48000000 | ((u32)d & 0x03FFFFFC);
 		make_address_range_executable(site, 4);
 	}
@@ -818,6 +825,9 @@ static void* jit_icmiss_c(u32 pc, s32 budget, u32* lr)
 			printf("[ARMJIT] return cache: site demoted, targets %08x / %08x\n", prev, pc);
 		}
 		s32 d = (s32)((u8*)s_stub_dispatch - (u8*)at);
+#if defined(__WIIU__)
+		wiiu_codegen_write_begin();
+#endif
 		*at = 0x48000000 | ((u32)d & 0x03FFFFFC);
 		make_address_range_executable(at, 4);
 		ARMC(ARMC_IC_DEMOTE);
@@ -826,6 +836,9 @@ static void* jit_icmiss_c(u32 pc, s32 budget, u32* lr)
 
 	u32* link = (u32*)code - ((u32*)code)[-2];
 	s32 d = (s32)((u8*)link - (u8*)&site[3]);
+#if defined(__WIIU__)
+	wiiu_codegen_write_begin();
+#endif
 	site[0] = (site[0] & 0xFFFF0000) | ((0u - (pc >> 16)) & 0xFFFF);
 	site[1] = (site[1] & 0xFFFF0000) | (pc & 0xFFFF);
 	site[3] = 0x48000000 | ((u32)d & 0x03FFFFFC);
@@ -858,7 +871,7 @@ static void emit_stubs()
 	// dispatch: r3 = pc
 	s_stub_dispatch = emit_ptr;
 	e_count(ARMC_DISPATCH);
-	if (s_retcache)
+	if (s_emit_dispatch)
 	{
 		// DISPATCH() in emitted code. Any of FIQ pending, budget spent or block
 		// not compiled falls through to jit_dispatch_c, which redoes all three.
@@ -1805,10 +1818,24 @@ void arm_jit_on_reset()
 		return;
 	}
 	s_link     = get_arm7_jit_preset() >= 2;
+	s_emit_dispatch = get_arm7_jit_preset() >= 3;
+#ifdef __WIIU__
+	// the per-site return cache keeps miss counters in the code itself, which the emitted miss stub updates; the
+	// Wii U's codegen area is read-only while executable, so that store faults (seen on a console). The rest of
+	// levels 3-5 doesn't write code from emitted code.
+	s_retcache = false;
+#else
 	s_retcache = get_arm7_jit_preset() >= 3;
+#endif
 	s_inline_blk = get_arm7_jit_preset() >= 4;
 	s_fold     = get_arm7_jit_preset() >= 5;
+#ifdef __WIIU__
+	// the census keeps per-block counters in the code (code[-4]) that emitted code bumps: the same read-only-code
+	// fault as the return cache (it crashed the census build at start-up on a console); the SH4 census still runs
+	s_census   = false;
+#else
 	s_census   = g_jit_ccalls_preset != 0;
+#endif
 
 	jit_flush(true);
 	if (!s_announced)

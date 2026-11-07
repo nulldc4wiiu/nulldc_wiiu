@@ -46,17 +46,17 @@
 #include <stddef.h>	// offsetof — used for jit_scratch context slot addressing
 #include <math.h>	// sqrtf — fsqrt/fsrra native call targets
 #include <stdlib.h>	// malloc — JIT_HOTBLOCKS lazily allocates its block table
-#include "dc\sh4\sh4_opcode_list.h"
-#include "dc\sh4\sh4_interpreter.h"	// sh4_GetTimeslice — preset-latched timeslice
+#include "dc/sh4/sh4_opcode_list.h"
+#include "dc/sh4/sh4_interpreter.h"	// sh4_GetTimeslice — preset-latched timeslice
 
-#include "dc\sh4\sh4_registers.h"
-#include "dc\sh4\ccn.h"
-#include "dc\sh4\rec_v2\ngen.h"
-#include "dc\mem\sh4_mem.h"
-#include "dc\mem\sh4_internal_reg.h"	// sq_both — fastmem SQ trampoline fast path
+#include "dc/sh4/sh4_registers.h"
+#include "dc/sh4/ccn.h"
+#include "dc/sh4/rec_v2/ngen.h"
+#include "dc/mem/sh4_mem.h"
+#include "dc/mem/sh4_internal_reg.h"	// sq_both — fastmem SQ trampoline fast path
 #include "dc/sh4/rec_v2/ccall_census.h"	// C call-out census (JIT_CCALLS preset)
-#include "wii\wii_fastmem.h"		// PPC-MMU fastmem (FASTMEM preset)
-#include "emitter\PPCEmit\ppc_emitter.h"
+#include "wii/wii_fastmem.h"		// PPC-MMU fastmem (FASTMEM preset)
+#include "emitter/PPCEmit/ppc_emitter.h"
 
 // wii_driver.cpp defines its own higher-level wrappers for these names.
 // Undefine any macros from ppc_emitter.h that would clash with the
@@ -134,6 +134,9 @@ void ppc_li(u32 D,u32 imm)
 // JUMP OFFSET CALCULATION
 // =======================
 
+#if defined(__WIIU__)
+#include "wiiu_codegen.h"
+#endif
 snat ppc_jdiff_raw(void* dst)
 {
 	return (u8*)dst-(u8*)emit_GetCCPtr();
@@ -146,6 +149,15 @@ snat ppc_jdiff(void* dst)
 void ppc_bx(void* dst,u32 LK)
 {
 	snat offs = ppc_jdiff_raw(dst);
+#if defined(__WIIU__)
+	// on the Wii U, system library code can be out of reach of the codegen area: go through a veneer
+	if (!(offs<33554432 && offs>-33554432))
+	{
+		void* veneer = wiiu_codegen_veneer(dst);
+		if (veneer)
+			offs = ppc_jdiff_raw(veneer);
+	}
+#endif
 	//offs must fit in 24 bits
 	verify(offs<33554432 && offs>-33554432);
 	offs>>=2;
@@ -153,9 +165,26 @@ void ppc_bx(void* dst,u32 LK)
 	ppc_bx(offs,0,LK);
 }
 
+#if defined(__WIIU__)
+// exp_fm_x (experiment): the fastmem window base lives in r12, so scalar accesses are rlwinm + an indexed load/store. r12
+// is volatile and nothing in the JIT uses it, so it is reloaded after every call into C. Not after calls to the JIT's
+// own stubs: their sites have a fixed layout, and the stubs reach C through ppc_call themselves.
+extern "C" { int g_exp_fm_x; }
+#ifdef WIIU_INSTRUMENT
+int g_prof_links;
+extern u32 g_cnt_dyn;
+#endif
+extern u32 g_wiiu_fm_window;
+extern int g_wii_fastmem_active;
+extern u8* CodeCache;
+#endif
 void ppc_call(void* funct)
 {
 	ppc_bx(funct,1);
+#if defined(__WIIU__)
+	if (g_exp_fm_x && g_wii_fastmem_active && !((u8*)funct>=CodeCache && (u8*)funct<CodeCache+CODE_SIZE))
+		ppc_addis(ppc_r12,ppc_r0,g_wiiu_fm_window>>16);	// lis r12,window
+#endif
 }
 template<typename T> void ppc_call(T* dst) { return ppc_call((void*)dst); }
 
@@ -171,8 +200,15 @@ void ppc_call_and_jump(void* funct)
 	ppc_bcctrx(BO_ALWAYS,BI_CR0_EQ,0);  // bctr
 }
 template<typename T> void ppc_call_and_jump(T* dst) { return ppc_call_and_jump((void*)dst); }
+#if defined(__WIIU__)
+#include "wiiu_codegen.h"
+#endif
 void make_address_range_executable(void* addr, u32 size)
 {
+#if defined(__WIIU__)
+	wiiu_codegen_executable(addr, size);
+	return;
+#endif
 	//what gives?
 	DCFlushRange(addr, size);
 	ICInvalidateRange(addr, size);
@@ -305,6 +341,7 @@ void reg_reload_all_fpu();
 // BLOCK BEGIN/END
 // =======================
 
+extern "C" int get_jit_sbp_preset();
 void ngen_Begin(DecodedBlock* block,bool force_checks)
 {
 	compile_state.Reset();
@@ -351,9 +388,47 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 		const u32 code_sz = block->sh4_code_size ? block->sh4_code_size : 2;
 		u8* ptr = GetMemPtr(block->start, code_sz);
 
+		// jit_sbp=3: every instruction. RAM holds words natively, so an aligned
+		// word is two instructions; a lone halfword at either end sits at addr^2.
+		if (ptr && get_jit_sbp_preset()==3 && code_sz<=4096)
+		{
+			static ppc_label* fails[2048+2];
+			u32 n=0;
+			u32 a=(u32)(uintptr_t)ptr;
+			const u32 end=a+code_sz;
+			ppc_li(ppc_rarg0,a&~3u);
+			const u32 base=a&~3u;
+			for (; a<end; )
+			{
+				if ((a&2) || end-a<4)
+				{
+					const u32 w=a^2;
+					ppc_lhz(ppc_rarg1,ppc_rarg0,w-base);
+					ppc_cmpli(ppc_cr0,ppc_rarg1,*(u16*)w,0);
+					a+=2;
+				}
+				else
+				{
+					const u32 v=*(u32*)a;
+					ppc_lwz(ppc_rarg1,ppc_rarg0,a-base);
+					ppc_xoris(ppc_rarg1,ppc_rarg1,v>>16);
+					ppc_cmpli(ppc_cr0,ppc_rarg1,v&0xFFFF,0);
+					a+=4;
+				}
+				fails[n++]=ppc_CreateLabel();
+				ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);	// bne -> fail
+			}
+			ppc_label* all_ok=ppc_CreateLabel();
+			ppc_bcx(BO_ALWAYS,BI_CR0_LT,0,0,0);		// b all_ok
+			for (u32 i=0;i<n;i++)
+				fails[i]->MarkLabel();
+			ppc_li(ppc_rarg0,block->start);
+			ppc_jump(ngen_BlockCheckFail_stub);
+			all_ok->MarkLabel();
+		}
 		// DoCheck already probed this, but the mapping is the thing that makes
 		// the compare safe — never emit a load we cannot justify.
-		if (ptr)
+		else if (ptr)
 		{
 			// Only worth a second compare when the block is longer than one
 			// instruction; otherwise the tail IS the head.
@@ -1293,6 +1368,16 @@ void ngen_End(DecodedBlock* block)
 	case BET_DynamicJump:
 	case BET_DynamicRet:
 		//printf("Dynamic !\n");
+#ifdef WIIU_INSTRUMENT
+		if (g_prof_links)
+		{
+			// sampler apps: count dynamic exits (rarg1/rarg2 are free here)
+			u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_cnt_dyn);
+			ppc_lwz(ppc_rarg2,ppc_rarg1,lo);
+			ppc_addi(ppc_rarg2,ppc_rarg2,1);
+			ppc_stw(ppc_rarg2,ppc_rarg1,lo);
+		}
+#endif
 		//mov reg,djump
 		ppc_ori(ppc_rarg0,ppc_djump,0);  // mr rarg0, djump
 
@@ -1963,6 +2048,11 @@ struct HotBlock
 	u8* ppc_start;
 	u32 ppc_size;	// bytes of HOT PPC body (filled in at the end of ngen_Compile)
 	u32 ppc_cold;	// bytes of out-of-line mem slow paths FlushCold() appended
+	// [MEMC] memory ops by kind (Wii U fastmem sizing): runtime-address scalar
+	// reads/writes and 64-bit pairs go through the inline table lookup today;
+	// compile-time addresses are resolved when the block is compiled.
+	u16 rt_rd, rt_wr, rt_pair, const_mem;
+	u16 ftrv, fipr, fmac, sync_fpscr;	// FPU work (paired-single sizing) and full FPSCR syncs
 };
 
 // ChuChu compiles ~10k blocks between cache clears; at 2048 the first run left
@@ -1993,6 +2083,8 @@ extern "C" void hotblocks_reset()
 // Compile time: claim a slot for this block. Returns its index, or -1 if
 // unavailable — the caller needs the index to reach both the descriptor and
 // the counter, which live in separate arrays.
+// experiments, wiiu.cfg exp_*=1 (main_wiiu.cpp); off by default
+extern "C" { int g_exp_ps_ftrv; }
 static s32 hotblocks_slot(DecodedBlock* block)
 {
 	if (!get_hotblocks_preset())
@@ -2024,6 +2116,26 @@ static s32 hotblocks_slot(DecodedBlock* block)
 	h->ppc_start = 0;
 	h->ppc_size  = 0;
 	h->ppc_cold  = 0;
+	h->rt_rd = h->rt_wr = h->rt_pair = h->const_mem = 0;
+	h->ftrv = h->fipr = h->fmac = h->sync_fpscr = 0;
+	for (size_t i = 0; i < block->oplist.size(); i++)
+	{
+		const shil_opcode& op = block->oplist[i];
+		h->ftrv += op.op == shop_ftrv;
+		h->fipr += op.op == shop_fipr;
+		h->fmac += op.op == shop_fmac;
+		h->sync_fpscr += op.op == shop_sync_fpscr && !(op.flags & SYNC_FPSCR_SZ_ONLY);
+		if (op.op != shop_readm && op.op != shop_writem)
+			continue;
+		if (op.rs1.is_imm())
+			h->const_mem++;
+		else if (op.flags == 8)
+			h->rt_pair++;
+		else if (op.op == shop_readm)
+			h->rt_rd++;
+		else
+			h->rt_wr++;
+	}
 	s_hb_hits[idx] = 0;
 	return idx;
 }
@@ -2065,8 +2177,15 @@ static void hotblocks_disasm(const HotBlock& h)
 
 // Disassemble this block unless its pc has already been dumped. Returns true
 // if it actually emitted a dump.
+// Wii U: hot_after=<s> in wiiu.cfg keeps the disassembly budget for the scene that matters (a fight, not the
+// menus before it): nothing is dumped until that many seconds have been reported
+extern "C" int g_wiiu_hot_dump_after;
+int g_wiiu_hot_dump_after;
+static double s_hb_elapsed;
 static bool hotblocks_dump_once(const HotBlock& h)
 {
+	if (s_hb_elapsed < (double)g_wiiu_hot_dump_after)
+		return false;
 	if (s_hb_dumped_n >= HOT_DUMP_MAX)
 	{
 		// Say so, once. A silent budget exhaustion looks identical to "the
@@ -2095,6 +2214,7 @@ extern "C" void hotblocks_dump(double seconds)
 {
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
 		return;
+	s_hb_elapsed += seconds;
 
 	// Totals first, so a block's share of all executed blocks is visible.
 	double all_hits = 0.0, all_ppc = 0.0, all_ops = 0.0;
@@ -2107,6 +2227,25 @@ extern "C" void hotblocks_dump(double seconds)
 
 	if (all_hits <= 0.0)
 		return;
+
+	{
+		double rd = 0.0, wr = 0.0, pair = 0.0, cm = 0.0, ftrv = 0.0, fipr = 0.0, fmac = 0.0, sf = 0.0;
+		for (u32 i=0;i<s_hb_n;i++)
+		{
+			ftrv += (double)s_hb_hits[i] * s_hb[i].ftrv;
+			fipr += (double)s_hb_hits[i] * s_hb[i].fipr;
+			fmac += (double)s_hb_hits[i] * s_hb[i].fmac;
+			sf   += (double)s_hb_hits[i] * s_hb[i].sync_fpscr;
+			rd   += (double)s_hb_hits[i] * s_hb[i].rt_rd;
+			wr   += (double)s_hb_hits[i] * s_hb[i].rt_wr;
+			pair += (double)s_hb_hits[i] * s_hb[i].rt_pair;
+			cm   += (double)s_hb_hits[i] * s_hb[i].const_mem;
+		}
+		printf("[MEMC] %.2fs  SH4 ops %.0f/s  PPC %.1f MB/s  runtime-address reads %.0f/s writes %.0f/s pairs %.0f/s  const-address %.0f/s\n",
+			seconds, all_ops/seconds, all_ppc/seconds/1e6, rd/seconds, wr/seconds, pair/seconds, cm/seconds);
+		printf("[MEMC] FPU: ftrv %.0f/s fipr %.0f/s fmac %.0f/s, full fpscr syncs %.0f/s\n",
+			ftrv/seconds, fipr/seconds, fmac/seconds, sf/seconds);
+	}
 
 	printf("[HOT] %.2fs  %u blocks tracked, %.0f entries/s, %.1f PPC B per SH4 op (execution-weighted)\n",
 		seconds, s_hb_n, all_hits/seconds, all_ops>0.0?(all_ppc/all_ops):0.0);
@@ -2192,6 +2331,9 @@ extern "C" void hotblocks_dump(double seconds)
 
 void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
+#if defined(__WIIU__)
+void FASTCALL wiiu_sqw_fast(u32 dst);
+#endif
 
 // Native call targets for fsqrt/fsrra. Broadway has no hardware fsqrt and its
 // frsqrte estimate (~5-bit) is too imprecise (it distorted the BIOS swirl), so
@@ -2444,7 +2586,11 @@ static void FlushCold()
 // faults there.
 // ============================================================================
 
+#if defined(__WIIU__)
+extern u8* CodeCache;
+#else
 extern u8 CodeCache[];
+#endif
 extern "C" int get_fastmem_preset();	// main.cpp: 0=off (default), 1=on
 
 static inline bool fastmem_on()
@@ -2455,9 +2601,48 @@ static inline bool fastmem_on()
 // Trampoline pool. MEM1 .bss like CodeCache, so `b` reach (±32 MB) always
 // holds (checked at emit time anyway). Reset together with the block cache:
 // patched sites die with their blocks, so their trampolines must too.
+#if defined(__WIIU__)
+// Wii U (wiiu/fastmem_wiiu.cpp): the pool has to be in the codegen area to execute, and the window is a 512 MB-aligned
+// block of virtual space, not EA 0, so every shape ORs its base in after the mask (fm_ea). fastmem=2 (Cemu, which can
+// neither alias memory nor raise DSIs) gives every site its trampoline at compile time, as if each had faulted:
+// a much bigger pool, and blocks stop compiling (cache clear) before it runs out.
+static u8* s_fm_pool = 0;
+static u32 FM_POOL_SIZE = 512*1024;	// fastmem=2: 4 MB (the console's codegen area is 32 MB, Cemu's 16)
+extern u32 g_wiiu_fm_window;
+extern int g_wiiu_fm_prepatch;
+#define FM_WINDOW g_wiiu_fm_window
+#define FM_SITES_MAX 512
+static u32* s_fm_sites[FM_SITES_MAX];	// this block's fault sites, for fastmem=2
+static u32 s_fm_sites_n;
+#else
 #define FM_POOL_SIZE (128*1024)
 static u8  s_fm_pool[FM_POOL_SIZE] __attribute__((aligned(32)));
+#define FM_WINDOW 0u
+#endif
 static u32 s_fm_pool_used   = 0;
+#ifdef WIIU_INSTRUMENT
+u32 wiiu_fm_pool_lo() { return (u32)(uintptr_t)s_fm_pool; }
+u32 wiiu_fm_pool_hi() { return (u32)(uintptr_t)s_fm_pool + FM_POOL_SIZE; }
+#endif
+
+#if defined(__WIIU__)
+#define FM_ACCESS(indexed,dform) do { if (g_exp_fm_x) { indexed; } else { dform; } } while (0)
+#else
+#define FM_ACCESS(indexed,dform) dform
+#endif
+
+// The address part of every fastmem shape: rD = window + (addr & 0x1FFFFFFF). `before` is the number of instructions
+// the caller emits between this and the access (the sub-word xori), so fastmem=2 knows where the fault site lands.
+static void fm_ea(u32 rd,u32 rs,u32 before,bool pair=false)
+{
+	ppc_rlwinmx(rd,rs,0,3,31,0);
+#if defined(__WIIU__)
+	if (pair || !g_exp_fm_x)	// a pair's second word needs a displacement, which indexed forms don't have
+		ppc_oris(rd,rd,FM_WINDOW>>16);
+	if (g_wiiu_fm_prepatch && s_fm_sites_n < FM_SITES_MAX)
+		s_fm_sites[s_fm_sites_n++] = (u32*)emit_GetCCPtr() + before;
+#endif
+}
 static u32 s_fm_patch_count = 0;
 
 // Exception-context diagnostics. printf/stdio is FORBIDDEN anywhere in the
@@ -2533,6 +2718,21 @@ static u32  fm_dform(u32 op6,u32 rt,u32 ra,u32 dd) { return (op6<<26)|(rt<<21)|(
 static void fm_mr(u32 dst,u32 src)                 { if (dst!=src) fm_w(0x7C000378|(src<<21)|(dst<<16)|(src<<11)); }
 static bool fm_branch(void* target,u32 lk)
 {
+#if defined(__WIIU__)
+	// calls into the app: on a console its code sits ~170 MB from the codegen area, past bl's +-32 MB, so call
+	// through r12/CTR (both volatile across the C call anyway)
+	if (lk)
+	{
+		const u32 a=(u32)(uintptr_t)target;
+		fm_w(0x3D800000|(a>>16));		// lis   r12,a@h
+		fm_w(0x618C0000|(a&0xFFFF));		// ori   r12,r12,a@l
+		fm_w(0x7D8903A6);			// mtctr r12
+		fm_w(0x4E800421);			// bctrl
+		if (g_exp_fm_x)
+			fm_w(0x3D800000|(FM_WINDOW>>16));	// lis r12,window
+		return true;
+	}
+#endif
 	snat disp=(u8*)target-(u8*)fm_p;
 	if (disp>=33554432 || disp<-33554432)
 		return false;
@@ -2591,10 +2791,38 @@ static int fm_find_areg(u32* site,u32 ea_reg)
 // libogc panic screen. Called from WiiFastmem_HandleDSI (exception context:
 // interrupts off, FPU off — keep this integer-only and printf-free except
 // on the failure/debug paths).
+static int rec_fastmem_patch_dar(unsigned int pc,u32 dar);
+#if !defined(__WIIU__)
 int rec_fastmem_patch(unsigned int pc)
 {
 	u32 dar;
 	asm volatile("mfspr %0,19" : "=r"(dar));	// DAR = faulting (masked) EA
+	return rec_fastmem_patch_dar(pc,dar);
+}
+#else
+// wiiu/fastmem_wiiu.cpp's DSI callback (DAR comes from the exception context: mfspr DAR is privileged there)
+extern "C" int wiiu_fastmem_patch(unsigned int pc,u32 dar) { return rec_fastmem_patch_dar(pc,dar); }
+// for the crash report (normal context): why the last patch was refused
+extern "C" void wiiu_fastmem_failure(u32* reason,u32* pc,u32* insn,u32* dar)
+{
+	*reason=s_fm_fail_reason; *pc=s_fm_fail_pc; *insn=s_fm_fail_insn; *dar=s_fm_fail_dar;
+}
+#endif
+
+// rD = (window EA & 0x1FFFFFFF) + 4: the masked Dreamcast address of a pair's second word
+static void fm_ea_plus4(u32 rd,u32 rea)
+{
+#if defined(__WIIU__)
+	fm_w(0x54000000|(rea<<21)|(rd<<16)|(3<<6)|(31<<1));	// rlwinm rd,rea,0,3,31
+	fm_w(fm_dform(14,rd,rd,4));				// addi rd,rd,4
+#else
+	fm_w(fm_dform(14,rd,rea,4));				// addi rd,rea,4
+#endif
+}
+
+static int rec_fastmem_patch_dar(unsigned int pc,u32 dar)
+{
+	const u32 dca=dar-FM_WINDOW;	// the masked Dreamcast address that faulted
 
 	// Only faults inside the code cache can be fastmem sites.
 	if (pc < (u32)(uintptr_t)&CodeCache[0] || pc >= (u32)(uintptr_t)&CodeCache[0]+CODE_SIZE)
@@ -2605,20 +2833,43 @@ int rec_fastmem_patch(unsigned int pc)
 
 	u32* site=(u32*)pc;
 	const u32 insn=*site;
-	const u32 op6=insn>>26;
+	u32 op6=insn>>26;
 	const u32 rt =(insn>>21)&31;	// rD (loads) / rS (stores)
-	const u32 ra =(insn>>16)&31;	// base = EA scratch = shape discriminator
-	const u32 dd =insn&0xFFFF;
+	u32 ra =(insn>>16)&31;	// base = EA scratch = shape discriminator
+	u32 dd =insn&0xFFFF;
+#if defined(__WIIU__)
+	// exp_fm_x: an indexed access off r12 is the same site as its D-form; rB holds the masked address
+	if (op6==31 && ra==12)
+	{
+		const u32 xo=(insn>>1)&0x3FF;
+		op6= xo==23?32: xo==87?34: xo==343?42: xo==535?48: xo==151?36: xo==215?38: xo==407?44: xo==663?52: 0;
+		ra=(insn>>11)&31;
+		dd=0;
+	}
+#endif
 
-	if (s_fm_pool_used + 32*sizeof(u32) > sizeof(s_fm_pool))
+	if (s_fm_pool_used + 32*sizeof(u32) > FM_POOL_SIZE)
 	{
 		s_fm_fail_pc=pc; s_fm_fail_insn=insn; s_fm_fail_dar=dar; s_fm_fail_reason=2;
 		return 1;
 	}
 
+#if defined(__WIIU__)
+	wiiu_codegen_write_begin();	// the pool is in the codegen area
+#endif
 	fm_p=(u32*)&s_fm_pool[s_fm_pool_used];
 	u32* const tramp=fm_p;
 	bool ok=false;
+#if defined(__WIIU__)
+	// fastmem=2 never runs the window accesses, so prove r12 here: trap unless it holds the window base
+	if (g_wiiu_fm_prepatch && g_exp_fm_x)
+	{
+		fm_w(0x3C000000|(FM_WINDOW>>16));	// lis  r0,window
+		fm_w(0x7C0C0000);			// cmpw r12,r0
+		fm_w(0x41820008);			// beq  +8
+		fm_w(0x7FE00008);			// trap
+	}
+#endif
 
 	if ((op6==32||op6==42||op6==34) && ra==ppc_rarg1 && dd==0)
 	{
@@ -2666,7 +2917,7 @@ int rec_fastmem_patch(unsigned int pc)
 		{
 			ok=true;
 			fm_mr(ppc_rarg3,ppc_rrv0);			// save word[addr]
-			fm_w(fm_dform(14,ppc_rarg0,ppc_rarg2,4));	// addi r3,r5,4 (masked EA+4)
+			fm_ea_plus4(ppc_rarg0,ppc_rarg2);		// r3 = masked EA+4
 			ok&=fm_branch((void*)ReadMem32,1);
 			fm_mr(ppc_rrv1,ppc_rrv0);
 			fm_mr(ppc_rrv0,ppc_rarg3);
@@ -2682,7 +2933,7 @@ int rec_fastmem_patch(unsigned int pc)
 		{
 			const u32 sz=(op6==38)?1:(op6==44)?2:4;
 			ok=true;
-			if (dar < 0x04000000)
+			if (dca < 0x04000000)
 			{
 				fm_w(0x54000000|((u32)areg<<21)|(ppc_rarg2<<16)|(6<<11)|(26<<6)|(31<<1));	// rlwinm r5,areg,6,26,31 (addr>>26)
 				fm_w(0x2C000000|(ppc_rarg2<<16)|0x38);		// cmpwi r5,0x38 — SQ region?
@@ -2708,7 +2959,7 @@ int rec_fastmem_patch(unsigned int pc)
 		if (fm_find_areg(site,ra)==ppc_rarg0)
 		{
 			ok=true;
-			if (dar < 0x04000000)
+			if (dca < 0x04000000)
 			{
 				// fmov.d bursts into the SQ are THE geometry path.
 				fm_w(0x54000000|(ppc_rarg0<<21)|(ppc_rarg1<<16)|(6<<11)|(26<<6)|(31<<1));	// rlwinm r4,r3,6,26,31
@@ -2731,7 +2982,7 @@ int rec_fastmem_patch(unsigned int pc)
 		if (fm_find_areg(site,ra)>=0)
 		{
 			ok=true;
-			fm_w(fm_dform(14,ppc_rarg0,ppc_rarg1,4));	// addi r3,r4,4 (masked EA+4)
+			fm_ea_plus4(ppc_rarg0,ppc_rarg1);		// r3 = masked EA+4
 			fm_mr(ppc_rarg1,ppc_rarg3);
 			ok&=fm_branch((void*)WriteMem32,1);
 			ok&=fm_branch(site+1,0);
@@ -2794,7 +3045,7 @@ int rec_fastmem_patch(unsigned int pc)
 		if (fm_find_areg(site,ra)>=0 && fofs>=0)
 		{
 			ok=true;
-			fm_w(fm_dform(14,ppc_rarg0,ppc_rarg2,4));		// addi r3,r5,4 (masked EA+4)
+			fm_ea_plus4(ppc_rarg0,ppc_rarg2);			// r3 = masked EA+4
 			ok&=fm_branch((void*)ReadMem32,1);
 			fm_w(fm_dform(36,ppc_rrv0,ppc_contex,(u32)fofs));	// stw r3,fofs(r30)
 			fm_w(fm_dform(48,rt,ppc_contex,(u32)fofs));		// lfs fD,fofs(r30)
@@ -2811,7 +3062,7 @@ int rec_fastmem_patch(unsigned int pc)
 		if (areg>=0 && fofs>=0)
 		{
 			ok=true;
-			if (dar < 0x04000000)
+			if (dca < 0x04000000)
 			{
 				fm_w(0x54000000|((u32)areg<<21)|(ppc_rarg2<<16)|(6<<11)|(26<<6)|(31<<1));	// rlwinm r5,areg,6,26,31
 				fm_w(0x2C000000|(ppc_rarg2<<16)|0x38);		// cmpwi r5,0x38 — SQ region?
@@ -2838,7 +3089,7 @@ int rec_fastmem_patch(unsigned int pc)
 		if (fm_find_areg(site,ra)==ppc_rarg0 && fofs>=0)
 		{
 			ok=true;
-			if (dar < 0x04000000)
+			if (dca < 0x04000000)
 			{
 				fm_w(0x54000000|(ppc_rarg0<<21)|(ppc_rarg1<<16)|(6<<11)|(26<<6)|(31<<1));	// rlwinm r4,r3,6,26,31
 				fm_w(0x2C000000|(ppc_rarg1<<16)|0x38);		// cmpwi r4,0x38
@@ -2865,7 +3116,7 @@ int rec_fastmem_patch(unsigned int pc)
 		if (fm_find_areg(site,ra)>=0 && fofs>=0)
 		{
 			ok=true;
-			fm_w(fm_dform(14,ppc_rarg0,ppc_rarg1,4));		// addi r3,r4,4 (before r4 dies)
+			fm_ea_plus4(ppc_rarg0,ppc_rarg1);			// r3 = masked EA+4 (before r4 dies)
 			fm_w(fm_dform(52,rt,ppc_contex,(u32)fofs));		// stfs fS,fofs(r30)
 			fm_w(fm_dform(32,ppc_rarg1,ppc_contex,(u32)fofs));	// lwz  r4,fofs(r30)
 			ok&=fm_branch((void*)WriteMem32,1);
@@ -2890,6 +3141,9 @@ int rec_fastmem_patch(unsigned int pc)
 		s_fm_fail_pc=pc; s_fm_fail_insn=insn; s_fm_fail_dar=dar; s_fm_fail_reason=4;
 		return 1;
 	}
+#if defined(__WIIU__)
+	wiiu_codegen_write_begin();
+#endif
 	*site=0x48000000|((u32)disp&0x03FFFFFC);
 	make_address_range_executable(site,sizeof(u32));
 
@@ -2906,6 +3160,13 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	// Bail out early if there isn't enough space for a worst-case block
 	if (emit_FreeSpace() < 16384) // 16*1024
 		return 0;
+#if defined(__WIIU__)
+	// nor in the trampoline pool: a site that can't get a trampoline when it faults is a crash, so clear the cache
+	// (and the pool with it) first; fastmem=2 gives a whole block's sites trampolines at once
+	if (fastmem_on() && s_fm_pool_used + (g_wiiu_fm_prepatch ? FM_SITES_MAX * 128u : 32768u) > FM_POOL_SIZE)
+		return 0;
+	s_fm_sites_n = 0;
+#endif
 
 	// JIT_ALIGN preset: pad the entry to the next 32-byte L1 line so every
 	// block start (hence every branch/link target landing on one) begins on a
@@ -3119,7 +3380,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						// rarg0. EA scratch MUST be rarg2. word[addr]->rrv0
 						// (high), word[addr+4]->rrv1 (low), matching the
 						// ReadMem64 slow path register-for-register.
-						ppc_rlwinmx(ppc_rarg2,ppc_rarg0,0,3,31,0);	// EA = addr & 0x1FFFFFFF
+						fm_ea(ppc_rarg2,ppc_rarg0,0,true);	// EA = addr & 0x1FFFFFFF
 						if (fdirect)
 						{
 							// JIT_FMOV: straight into the pinned FPRs. Same EA
@@ -3143,23 +3404,23 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						// Scalar: EA scratch MUST be rarg1. areg (pinned or
 						// rarg0) still holds the original SH4 address at the
 						// load — the fault decoder relies on that.
-						ppc_rlwinmx(ppc_rarg1,areg,0,3,31,0);	// EA = addr & 0x1FFFFFFF
+						fm_ea(ppc_rarg1,areg,sz<4);	// EA = addr & 0x1FFFFFFF
 						if (sz<4)
 							ppc_xori(ppc_rarg1,ppc_rarg1,4-sz);	// BE sub-word swizzle
 						if (fdirect)
 						{
 							fm_note_float_site();
-							ppc_lfs(fd0,ppc_rarg1,0);		// fault site (sz==4 only)
+							FM_ACCESS(ppc_lfsx(fd0,ppc_r12,ppc_rarg1),ppc_lfs(fd0,ppc_rarg1,0));		// fault site (sz==4 only)
 						}
 						else if (sz==1)
 						{
-							ppc_lbz(rdreg,ppc_rarg1,0);		// fault site
+							FM_ACCESS(ppc_lbzx(rdreg,ppc_r12,ppc_rarg1),ppc_lbz(rdreg,ppc_rarg1,0));		// fault site
 							ppc_extsbx(rdreg,rdreg,0);
 						}
 						else if (sz==2)
-							ppc_lha(rdreg,ppc_rarg1,0);		// fault site
+							FM_ACCESS(ppc_lhax(rdreg,ppc_r12,ppc_rarg1),ppc_lha(rdreg,ppc_rarg1,0));		// fault site
 						else
-							ppc_lwz(rdreg,ppc_rarg1,0);		// fault site
+							FM_ACCESS(ppc_lwzx(rdreg,ppc_r12,ppc_rarg1),ppc_lwz(rdreg,ppc_rarg1,0));		// fault site
 					}
 				}
 				else if (!isram)
@@ -3408,7 +3669,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					{
 						// Pair: address in rarg0, data in rarg2:rarg3 =
 						// high:low. EA scratch MUST be rarg1.
-						ppc_rlwinmx(ppc_rarg1,ppc_rarg0,0,3,31,0);	// EA = addr & 0x1FFFFFFF
+						fm_ea(ppc_rarg1,ppc_rarg0,0,true);	// EA = addr & 0x1FFFFFFF
 						if (fdirect)
 						{
 							// JIT_FMOV: straight from the pinned FPRs; the
@@ -3431,20 +3692,20 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						// needed on the direct path — stb/sth store the low
 						// byte/halfword by definition (the trampoline's C
 						// call path re-applies the andi like ColdFrag does).
-						ppc_rlwinmx(ppc_rarg2,areg,0,3,31,0);	// EA = addr & 0x1FFFFFFF
+						fm_ea(ppc_rarg2,areg,sz<4);	// EA = addr & 0x1FFFFFFF
 						if (sz<4)
 							ppc_xori(ppc_rarg2,ppc_rarg2,4-sz);	// BE sub-word swizzle
 						if (fdirect)
 						{
 							fm_note_float_site();
-							ppc_stfs(fs0,ppc_rarg2,0);		// fault site (sz==4 only)
+							FM_ACCESS(ppc_stfsx(fs0,ppc_r12,ppc_rarg2),ppc_stfs(fs0,ppc_rarg2,0));		// fault site (sz==4 only)
 						}
 						else if (sz==1)
-							ppc_stb(datareg,ppc_rarg2,0);		// fault site
+							FM_ACCESS(ppc_stbx(datareg,ppc_r12,ppc_rarg2),ppc_stb(datareg,ppc_rarg2,0));		// fault site
 						else if (sz==2)
-							ppc_sth(datareg,ppc_rarg2,0);		// fault site
+							FM_ACCESS(ppc_sthx(datareg,ppc_r12,ppc_rarg2),ppc_sth(datareg,ppc_rarg2,0));		// fault site
 						else
-							ppc_stw(datareg,ppc_rarg2,0);		// fault site
+							FM_ACCESS(ppc_stwx(datareg,ppc_r12,ppc_rarg2),ppc_stw(datareg,ppc_rarg2,0));		// fault site
 					}
 				}
 				else
@@ -3908,6 +4169,34 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			ppc_rlwnmx(ppc_rarg0,ppc_rarg0,ppc_rarg1,0,31,0);	// rotl, full mask
 			binop_end(op);
 			break;
+#if defined(__WIIU__)
+		// SH4 dynamic shifts with a branch on the amount's sign, which is the same every time at most sites. Going right
+		// the amount is (~r2 & 0x1F) + 1, 1..32, and srw/sraw treat 32 properly (0 / the sign), so the zero case the
+		// branchless forms below spend ten instructions on needs nothing.
+		case shop_shld:
+		case shop_shad:
+			{
+				binop_start(op);				// rarg0=r1, rarg1=r2
+				ppc_cmpi(ppc_cr0,ppc_rarg1,0,0);
+				ppc_label* right=ppc_CreateLabel();
+				ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt right
+				ppc_rlwinmx(ppc_rarg2,ppc_rarg1,0,27,31,0);	// r2 & 0x1F
+				ppc_slwx(ppc_rarg0,ppc_rarg0,ppc_rarg2,0);
+				ppc_label* done=ppc_CreateLabel();
+				ppc_bcx(BO_ALWAYS,BI_CR0_LT,0,0,0);		// b done
+				right->MarkLabel();
+				ppc_norx(ppc_rarg2,ppc_rarg1,ppc_rarg1,0);	// ~r2
+				ppc_rlwinmx(ppc_rarg2,ppc_rarg2,0,27,31,0);
+				ppc_addi(ppc_rarg2,ppc_rarg2,1);		// 1..32
+				if (op->op==shop_shld)
+					ppc_srwx(ppc_rarg0,ppc_rarg0,ppc_rarg2,0);
+				else
+					ppc_srawx(ppc_rarg0,ppc_rarg0,ppc_rarg2,0);
+				done->MarkLabel();
+				binop_end(op);
+			}
+			break;
+#else
 		case shop_shld:
 			// SH4 logical dynamic shift (branchless):
 			//   left  = r1 << (r2 & 0x1F)
@@ -3964,6 +4253,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				binop_end(op);
 			}
 			break;
+#endif
 
 		// --- Carry / overflow arithmetic (JIT_CARRY preset) -------------------
 		// All of these used to be shop_ifb call-outs because SHIL had no way to
@@ -4349,10 +4639,97 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		case shop_ftrv:
 			{
 				const bool dp=get_jit_fipr_preset()!=0;
+#if defined(__WIIU__)
+				// the input vector where it is: pinned FRs are read in place (rd aliases it, but the results only
+				// leave f4..f7 after the last read)
+				u32 vin[4];
+				for (u32 j=0;j<4;j++)
+				{
+					const ppc_freg rf=get_fpu_pin_preset() ? GetFloatReg(op->rs1._reg+j) : ppc_finvalid;
+					if (rf!=ppc_finvalid)
+						vin[j]=(u32)rf;
+					else
+					{
+						ppc_fvec_load(ppc_f8+j,op->rs1,j);
+						vin[j]=ppc_f8+j;
+					}
+				}
+#else
 				// Load the input vector once into f8..f11.
 				for (u32 j=0;j<4;j++)
 					ppc_fvec_load(ppc_f8+j,op->rs1,j);
+#endif
 
+#if defined(__WIIU__)
+				if (g_exp_ps_ftrv)
+				{
+					// paired singles: the matrix rows two floats at a time, out[0,1] in f4 and out[2,3] in f5. Single
+					// precision throughout, so not bit-identical to the default (jit_fipr keeps double). GQR0 must be
+					// 0, plain floats; the 12-bit displacement holds because xf[] sits at the start of the context.
+					const u32 mo=ppc_fvec_ofs(op->rs2,0);
+					for (u32 j=0;j<4;j+=2)
+					{
+						ppc_psq_l(ppc_f0,ppc_contex,0,0,mo+j*16);
+						ppc_psq_l(ppc_f1,ppc_contex,0,0,mo+j*16+8);
+						ppc_psq_l(ppc_f2,ppc_contex,0,0,mo+j*16+16);
+						ppc_psq_l(ppc_f3,ppc_contex,0,0,mo+j*16+24);
+						if (j==0)
+						{
+							ppc_ps_muls0(ppc_f4,ppc_f0,vin[0],0);
+							ppc_ps_muls0(ppc_f5,ppc_f1,vin[0],0);
+						}
+						else
+						{
+							ppc_ps_madds0(ppc_f4,ppc_f0,ppc_f4,vin[j],0);
+							ppc_ps_madds0(ppc_f5,ppc_f1,ppc_f5,vin[j],0);
+						}
+						ppc_ps_madds0(ppc_f4,ppc_f2,ppc_f4,vin[j+1],0);
+						ppc_ps_madds0(ppc_f5,ppc_f3,ppc_f5,vin[j+1],0);
+					}
+					ppc_ps_merge11(ppc_f6,ppc_f4,ppc_f4,0);
+					ppc_ps_merge11(ppc_f7,ppc_f5,ppc_f5,0);
+					ppc_fvec_store(ppc_f4,op->rd,0);
+					ppc_fvec_store(ppc_f6,op->rd,1);
+					ppc_fvec_store(ppc_f5,op->rd,2);
+					ppc_fvec_store(ppc_f7,op->rd,3);
+					break;
+				}
+				// The four output chains interleaved (accumulators f4..f7, this step's matrix column in f0..f3): each
+				// fmadd depends on the one four instructions back instead of the previous one, so the FPU pipeline
+				// stays full. Every chain still does the same operations in the same order, so the results are
+				// bit-identical to the serial form below, and the stash move is gone (f4..f7 are the stash).
+				for (u32 j=0;j<4;j++)
+				{
+					for (u32 i=0;i<4;i++)
+						ppc_fvec_load(ppc_f0+i,op->rs2,j*4+i);	// m[j*4+i]
+					for (u32 i=0;i<4;i++)
+					{
+						if (j==0)
+						{
+							if (dp) ppc_fmulx (ppc_f4+i,ppc_f0+i,vin[0],0);	// out[i] = m[i]*v0
+							else    ppc_fmulsx(ppc_f4+i,ppc_f0+i,vin[0],0);
+						}
+						else
+						{
+							if (dp) ppc_fmaddx (ppc_f4+i,ppc_f0+i,ppc_f4+i,vin[j],0);	// out[i] += m*vj
+							else    ppc_fmaddsx(ppc_f4+i,ppc_f0+i,ppc_f4+i,vin[j],0);
+						}
+					}
+				}
+				for (u32 i=0;i<4;i++)
+				{
+					// round(out[i]) (JIT_FIPR) straight into a pinned result
+					const ppc_freg rf=get_fpu_pin_preset() ? GetFloatReg(op->rd._reg+i) : ppc_finvalid;
+					if (dp && rf!=ppc_finvalid)
+						ppc_frspx((u32)rf,ppc_f4+i,0);
+					else
+					{
+						if (dp)
+							ppc_frspx(ppc_f4+i,ppc_f4+i,0);
+						ppc_fvec_store(ppc_f4+i,op->rd,i);
+					}
+				}
+#else
 				for (u32 i=0;i<4;i++)
 				{
 					ppc_fvec_load(ppc_f1,op->rs2,i);		// m[i]
@@ -4371,6 +4748,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				}
 				for (u32 i=0;i<4;i++)
 					ppc_fvec_store(ppc_f4+i,op->rd,i);
+#endif
 			}
 			break;
 
@@ -4470,7 +4848,11 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				if (mmucr_at())
 					ppc_call(&do_sqw_mmu);			// do_sqw reloads rarg0=addr arg
 				else
+#if defined(__WIIU__)
+					ppc_call(&wiiu_sqw_fast);		// wiiu/render_gx2.cpp: TA data in one call
+#else
 					ppc_call(&do_sqw_nommu);
+#endif
 				skip->MarkLabel();
 			}
 			break;
@@ -4654,6 +5036,15 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	u8 *const _hb_cold_start = (u8*)emit_GetCCPtr();
 
 	FlushCold();          // emit the out-of-line mem slow paths after the block tail
+#if defined(__WIIU__)
+	// fastmem=2: every site gets its trampoline now, as if it had faulted at a Dreamcast address in area 0 (so writes
+	// also build the store queue path)
+	if (g_wiiu_fm_prepatch)
+		for (u32 i = 0; i < s_fm_sites_n; i++)
+			if (rec_fastmem_patch_dar((unsigned)(uintptr_t)s_fm_sites[i], FM_WINDOW) != 0)
+				printf("[fastmem] pre-patch failed at %p: reason %u insn %08x\n", s_fm_sites[i],
+				       (unsigned)s_fm_fail_reason, (unsigned)s_fm_fail_insn);
+#endif
 	make_address_range_executable((u8*)rv, (u8*)emit_GetCCPtr()-(u8*)rv);
 
 	// Hot body and cold fragments recorded separately — B/op is built on the HOT
@@ -4814,6 +5205,18 @@ void ngen_mainloop()
 	// Called here (not recSh4_Init) so the game preset file has been
 	// applied and _vmem_reserve() has placed the guest arrays.
 	WiiFastmem_Init();
+#if defined(__WIIU__)
+	if (g_wii_fastmem_active && !s_fm_pool)
+	{
+		if (g_wiiu_fm_prepatch)
+			FM_POOL_SIZE = 4*1024*1024;
+		s_fm_pool = (u8*)wiiu_codegen_alloc(FM_POOL_SIZE, "fastmem trampolines");
+		if (!s_fm_pool)
+			g_wii_fastmem_active = 0;
+		printf("[fastmem] trampoline pool %p, %u KB%s\n", s_fm_pool, FM_POOL_SIZE/1024, s_fm_pool ? "" : ": fastmem off");
+		rec_fastmem_reset_pool();
+	}
+#endif
 
 	printf("[LINK] static-link site check ARMED (jit_link_guard=%d)\n", get_jit_link_guard_preset());
 	fflush(stdout);
@@ -4826,7 +5229,13 @@ void ngen_mainloop()
 			/*
 			create stack frame, push regsters, etc ..
 			*/
+#if defined(__WIIU__)
+			// the Wii U build returns from here when the CPU is stopped (exit path below), so the non-volatile
+			// FPRs the JIT pins SH4 registers in are saved too: f14-f31 at sp+8, the GPRs at the top as before
+			u32 stac_alloc_size=(8+18*8+20*4+15)&~15u;
+#else
 			u32 stac_alloc_size=8+20*4;
+#endif
 			ppc_mfspr(ppc_r0,ppc_spr_lr);
 			ppc_addi(ppc_sp,ppc_sp,-stac_alloc_size);
 			
@@ -4839,6 +5248,10 @@ void ngen_mainloop()
 			{
 				ppc_stw(ppc_r13+i,ppc_sp,stac_alloc_size-4-i*4);
 			}
+#if defined(__WIIU__)
+			for (int i=0;i<18;i++)
+				ppc_stfd(ppc_f14+i,ppc_sp,8+i*8);
+#endif
 
 			/*
 			pre load registers/counters etc ..
@@ -4913,9 +5326,35 @@ void ngen_mainloop()
 				paid->MarkLabel();
 			}
 			no_intr->MarkLabel();
+#if defined(__WIIU__)
+			// leave the mainloop at a timeslice boundary once the CPU is stopped (recSh4_Stop clears
+			// sh4_int_bCpuRun), so the emulator thread can unwind and exit; upstream never returns from here
+			{
+				u32 lo=ppc_addr_high(ppc_rarg0,(void*)&sh4_int_bCpuRun);
+				ppc_lbz(ppc_rarg0,ppc_rarg0,lo);
+				ppc_cmpi(ppc_cr0,ppc_rarg0,0,0);
+				ppc_label* stop=ppc_CreateLabel();
+				ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq stop
+				ppc_sh_load(ppc_next_pc,reg_nextpc);
+				ppc_jump(loop_no_update);
+
+				stop->MarkLabel();
+				reg_flush_all();
+				reg_flush_all_fpu();
+				for (int i=0;i<18;i++)
+					ppc_lfd(ppc_f14+i,ppc_sp,8+i*8);
+				for (int i=0;i<19;i++)
+					ppc_lwz(ppc_r13+i,ppc_sp,stac_alloc_size-4-i*4);
+				ppc_lwz(ppc_r0,ppc_sp,stac_alloc_size+4);
+				ppc_mtlr(ppc_r0);
+				ppc_addi(ppc_sp,ppc_sp,stac_alloc_size);
+				ppc_bclrx(BO_ALWAYS,BI_CR0_EQ,0);		// blr
+			}
+#else
 			ppc_sh_load(ppc_next_pc,reg_nextpc);
 			//
 			ppc_jump(loop_no_update);
+#endif
 			//right
 
       /*
@@ -5006,6 +5445,7 @@ void ngen_mainloop()
 		//Make _SURE_ this code is not overwriten !
 		emit_SetBaseAddr();
 		
+#if !defined(__WIIU__)	// a debug dump on every boot; the Wii U build keeps SD writes down
 		char file[512];
 		snprintf(file, sizeof(file), "dynarec_%08X.bin", (u32)(uintptr_t)loop_code);
 		char* path=GetEmuPath(file);
@@ -5018,6 +5458,7 @@ void ngen_mainloop()
 			fwrite((void*)loop_code, 1, CODE_SIZE - emit_FreeSpace(), f);
 			fclose(f);  // fclose flushes; explicit fflush is redundant
 		}
+#endif
 		
     // CACHE COHERENCY
     make_address_range_executable((u8*)loop_code, (u8*)emit_GetCCPtr()-(u8*)loop_code);

@@ -96,7 +96,11 @@ void recSh4_ClearCache();
 
 extern volatile bool sh4_int_bCpuRun;
 
-#if HOST_OS == OS_WII
+#if defined(__WIIU__)
+// generated code must live in the codegen area (and stay within branch reach of the app's code)
+#include "wiiu_codegen.h"
+u8* CodeCache;   // set by main_wiiu.cpp before the emulator starts
+#elif HOST_OS == OS_WII
 u8 CodeCache[CODE_SIZE] __attribute__((aligned(32)));
 #elif HOST_OS == OS_LINUX
 // Linux needs an executable mapping; allocate with a page-alignment margin.
@@ -147,6 +151,10 @@ static inline u32 align_up_32(u32 v) { return (v + 31u) & ~31u; }
 static inline void wii_sync_icache(const void* start, u32 size)
 {
 	if (!size) return;
+#if defined(__WIIU__)
+	wiiu_codegen_executable(start, size);
+	return;
+#endif
 	// libogc functions are safe with unaligned inputs but work best aligned.
 	DCFlushRange((void*)start, align_up_32(size));
 	ICInvalidateRange((void*)start, align_up_32(size));
@@ -169,6 +177,9 @@ void emit_SetBaseAddr()
 
 void emit_Write8(u8 data)
 {
+#if defined(__WIIU__)
+	wiiu_codegen_write_begin();
+#endif
 	verify(!emit_ptr);
 	verify(LastAddr + 1 <= CODE_SIZE);
 	CodeCache[LastAddr++] = data;
@@ -176,6 +187,9 @@ void emit_Write8(u8 data)
 
 void emit_Write16(u16 data)
 {
+#if defined(__WIIU__)
+	wiiu_codegen_write_begin();
+#endif
 	verify(!emit_ptr);
 	verify(LastAddr + 2 <= CODE_SIZE);
 	*(u16*)&CodeCache[LastAddr] = data;
@@ -184,6 +198,9 @@ void emit_Write16(u16 data)
 
 void emit_Write32(u32 data)
 {
+#if defined(__WIIU__)
+	wiiu_codegen_write_begin();
+#endif
 	if (emit_ptr)
 	{
 		*emit_ptr++ = data;
@@ -283,6 +300,10 @@ void AnalyseBlock(DecodedBlock* blk);
 //   0 = off      — no guards at all (legacy behaviour, zero protection)
 //   1 = known    — guard only the addresses known to self-modify (default)
 //   2 = all RAM  — guard every block that lives in RAM (slow, for diagnosis)
+//   3 = modules  — as 1, plus MvC2's module cache 0CE30000..0CE5FFFF, with every
+//                  instruction of those blocks compared (ngen_Begin): its
+//                  character modules share head and tail instructions, so 2
+//                  still runs stale blocks there
 //
 // Note the GetMemPtr(pc, len) probe: a block straddling the end of a mapped
 // region has no contiguous host pointer to compare against, so it must not be
@@ -301,7 +322,10 @@ static bool DoCheck(u32 pc, u32 len)
 	if (!IsOnRam(pc))
 		return false;
 
-	if (mode >= 2)
+	if (mode == 2)
+		return true;
+
+	if (mode == 3 && (pc & 0xFFFFFF) >= 0xE30000 && (pc & 0xFFFFFF) < 0xE60000)
 		return true;
 
 	switch (pc & 0xFFFFFF)
@@ -331,8 +355,14 @@ static bool DoCheck(u32 pc, u32 len)
 //   but continue — giving time for blocks that are rarely re-used to be
 //   displaced naturally before forcing a full eviction.
 // ============================================================================
+#ifdef WIIU_INSTRUMENT
+extern u32 g_cnt_compile;
+#endif
 DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 {
+#ifdef WIIU_INSTRUMENT
+	g_cnt_compile++;
+#endif
 #if HOST_OS == OS_WII
 	// Update high-water mark
 	if (LastAddr > cache_high_water_mark)
@@ -440,8 +470,23 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 
 u32 rdv_FailedToFindBlock_pc;
 
+#ifdef __WIIU__
+// blocks left to log as they're compiled (set by ccn.cpp when a game turns the I-cache off for a soft reset)
+u32 wiiu_compile_trace;
+#endif
+
 DynarecCodeEntry* rdv_CompilePC()
 {
+#ifdef __WIIU__
+	if (wiiu_compile_trace)
+	{
+		wiiu_compile_trace--;
+		printf("[jit-trace] %08X r0 %08X r4 %08X r14 %08X r15 %08X pr %08X:", next_pc, r[0], r[4], r[14], r[15], pr);
+		for (int k = 0; k < 8; k++)
+			printf(" %04X", ReadMem16((next_pc & ~1u) + k * 2));
+		printf("\n");
+	}
+#endif
 	// FRAME_PROF: decode + analyse + ngen_Compile, plus any cache clear this
 	// call forces. Bracketed here rather than at the three call sites so that
 	// nothing can reach the compiler unmeasured.
@@ -635,12 +680,19 @@ void recSh4_Init()
 	printf("recSh4: code cache at %p (%u KB, Wii)\n",
 	       CodeCache, CODE_SIZE / 1024);
 
+#ifdef __WIIU__
+	// the codegen area is executable (read-only) here, as the ARM7 JIT left it: a store faults on a console
+	wiiu_codegen_write_begin();
+	memset(CodeCache, 0x00, CODE_SIZE);
+	wiiu_codegen_executable(CodeCache, CODE_SIZE);
+#else
 	memset(CodeCache, 0x00, CODE_SIZE);
 
 	// Ensure the zeroed data is visible to the instruction fetch unit
 	// before any code is written or executed.
 	DCFlushRange(CodeCache, CODE_SIZE);
 	ICInvalidateRange(CodeCache, CODE_SIZE);
+#endif
 
 	cache_high_water_mark = 0;
 	printf("recSh4: Wii code cache flushed\n");
