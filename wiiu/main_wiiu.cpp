@@ -183,7 +183,7 @@ extern "C" int g_frame_prof_preset;   // plugs/drkPvr/frame_prof.cpp
 u64 g_wiiu_prof[10];   // wiiu/prof_wiiu.h
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast, g_exp_aica_thread;
-extern int g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
+extern int wiiu_exp_split_convert, g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern u32 wiiu_bad_vertices;
 #ifdef WIIU_INSTRUMENT
 extern int wiiu_sampler_mode, wiiu_sampler_how, g_prof_links;
@@ -514,6 +514,8 @@ static void load_wiiu_cfg()
             wiiu_exp_frame_queue = atoi(value);
         else if (!strcmp(key, "exp_arm_thread"))
             g_exp_arm_thread = atoi(value);
+        else if (!strcmp(key, "exp_split_convert"))
+            wiiu_exp_split_convert = atoi(value);
         else if (!strcmp(key, "no_draw"))
             wiiu_no_draw = atoi(value);
         else if (!strcmp(key, "exp_gx2_dl"))
@@ -679,7 +681,7 @@ int main(int argc, char **argv)
     // console-tested defaults (Soulcalibur fights 86% -> 141% in bench, 99% in real play); wiiu.cfg can still turn any of
     // them off. The GX2 and sound threads go on a core the JIT isn't on: 0 on a console, 2 in Cemu, whose codegen core is 0
     wiiu_exp_gx2_core = g_exp_aica_thread = OSGetCodegenCore() == 0 ? 2 : 1;
-    g_exp_fm_x = g_exp_ps_ftrv = g_exp_sq_fast = wiiu_exp_frame_queue = g_bcache_preset = 1;
+    g_exp_fm_x = g_exp_ps_ftrv = g_exp_sq_fast = wiiu_exp_frame_queue = wiiu_exp_split_convert = g_bcache_preset = 1;
     g_jit_align_preset = 0;
     g_jit_sbp_preset = 3;   // MvC2's module cache
     audio_buffer_ms = 100;

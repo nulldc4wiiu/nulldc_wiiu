@@ -276,6 +276,7 @@ static u32 strip_idx_count;              // indices convert_frame wrote there: d
 static bool init_rtt_target();
 static void start_worker();
 static void start_intake();
+static void start_conv_helper();
 static void init_white_texture();
 static int geo_cur;
 static WiiuStrip strips[WIIU_MAX_STRIPS];
@@ -539,6 +540,7 @@ bool wiiu_gx2_init()
     wiiu_sampler(0);   // the sampler table, built here before two threads look samplers up
     start_worker();
     start_intake();
+    start_conv_helper();
 
     tex.surface.width = FB_MAX_W;
     tex.surface.height = FB_MAX_H;
@@ -882,6 +884,56 @@ int wiiu_exp_halfz;
 // the frame's vertices into clip space (from w x h Dreamcast pixels) at out, its strips, volumes, translucent
 // order and fog values into the statics draw_scene uses. CPU work only, so it can run on the worker core; the
 // fog table texture is the GX2 thread's (apply_fog_table)
+static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 to, float hw, float hh, float scale)
+{
+    for (u32 i = from; i < to; i++)
+    {
+        const WiiuVertex &v = f->v[i];
+        float invw = v.z > 1e-7f ? v.z : 1e-7f;
+        float w = 1.0f / invw;
+        float d = invw * scale;
+        if (d > 1.0f)
+            d = 1.0f;
+        out[i].x = (v.x / hw - 1.0f) * w;
+        out[i].y = (1.0f - v.y / hh) * w;
+        out[i].z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
+        out[i].w = w;
+        out[i].col = v.col;
+        out[i].spc = v.spc;
+        out[i].u = v.u;
+        out[i].v = v.v;
+    }
+}
+int wiiu_exp_split_convert;
+static struct { const WiiuFrame *f; GpuVertex *out; u32 from, to; float hw, hh, scale; } conv_job;
+static OSEvent conv_go, conv_done;
+static bool conv_helper_up;
+static OSThread conv_thread;
+static int conv_main(int, const char **)
+{
+    for (;;)
+    {
+        OSWaitEvent(&conv_go);
+        convert_vertices(conv_job.f, conv_job.out, conv_job.from, conv_job.to, conv_job.hw, conv_job.hh, conv_job.scale);
+        // flushed by the core that wrote them, as the intake thread does its own
+        DCFlushRange(&conv_job.out[conv_job.from], (conv_job.to - conv_job.from) * sizeof(GpuVertex));
+        OSSignalEvent(&conv_done);
+    }
+    return 0;
+}
+static void start_conv_helper()
+{
+    static u8 stack[32 * 1024] __attribute__((aligned(16)));
+    OSInitEvent(&conv_go, FALSE, OS_EVENT_MODE_AUTO);
+    OSInitEvent(&conv_done, FALSE, OS_EVENT_MODE_AUTO);
+    if (OSCreateThread(&conv_thread, conv_main, 0, nullptr, stack + sizeof(stack), sizeof(stack), 14,
+                       OSGetCodegenCore() == 0 ? OS_THREAD_ATTRIB_AFFINITY_CPU2 : OS_THREAD_ATTRIB_AFFINITY_CPU0))
+    {
+        OSSetThreadName(&conv_thread, "nullDC convert");
+        OSResumeThread(&conv_thread);
+        conv_helper_up = true;
+    }
+}
 int wiiu_exp_fix_inf;
 u32 wiiu_bad_vertices;   // infinite or NaN vertices seen (bench RESULT)
 // A point at the camera plane (Soulcalibur's floor, 4% of a fight's vertices) has an infinite 1/w, and w = 0 times an
@@ -938,23 +990,18 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     const float hw = width * 0.5f, hh = height * 0.5f;
     const float scale = f->max_invw > 0.0f ? 1.0f / f->max_invw : 1.0f;
     fix_inf_vertices((WiiuFrame *)f);
-    for (u32 i = 0; i < f->nv; i++)
+    // exp_split_convert: this is the intake core's biggest stage (7 of 13.8 ms in a Soulcalibur fight, console), and each
+    // vertex stands alone, so the helper core takes the second half
+    u32 first_half = f->nv;
+    if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
     {
-        const WiiuVertex &v = f->v[i];
-        float invw = v.z > 1e-7f ? v.z : 1e-7f;
-        float w = 1.0f / invw;
-        float d = invw * scale;
-        if (d > 1.0f)
-            d = 1.0f;
-        out[i].x = (v.x / hw - 1.0f) * w;
-        out[i].y = (1.0f - v.y / hh) * w;
-        out[i].z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
-        out[i].w = w;
-        out[i].col = v.col;
-        out[i].spc = v.spc;
-        out[i].u = v.u;
-        out[i].v = v.v;
+        first_half = f->nv / 2 & ~31u;
+        conv_job = { f, out, first_half, f->nv, hw, hh, scale };
+        OSSignalEvent(&conv_go);
     }
+    convert_vertices(f, out, 0, first_half, hw, hh, scale);
+    if (first_half != f->nv)
+        OSWaitEvent(&conv_done);
     // modifier volume triangles, then the full-screen quad, after the polygon vertices
     sc->mv_base = f->nv;
     for (u32 i = 0; i < f->n_mv_tris * 3; i++)
