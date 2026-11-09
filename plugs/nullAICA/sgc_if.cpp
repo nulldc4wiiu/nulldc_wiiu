@@ -34,6 +34,9 @@ extern u32 AicaSampleCount;
 
 //#define CLIP_WARN
 #define key_printf(x...)  /*printf(x);*/
+#ifdef __WIIU__
+#include <coreinit/core.h>
+#endif
 #define aeg_printf(x...)  /*printf(x);*/
 #define step_printf(x...) /*printf(x);*/
 
@@ -587,6 +590,14 @@ struct ChannelEx
                 // console's chime was silent only with mixing on another core; Cemu plays it)
                 extern u32 wiiu_keyons, wiiu_keyons_zero;
                 wiiu_keyons++;
+                // the first 16 key-ons: what this core sees of the channel's volume and envelope, and the master
+                // volume (the console's chime keys on with real data and still mixes to silence on core 0)
+                static u32 logged;
+                if (logged++ < 16)
+                    printf("[aica-key] ch %u: TL %u DISDL %u DIPAN %u AR %u D1R %u RR %u PCMS %u LPCTL %u OCT %u FNS %u; MVOL %u "
+                           "DSPEnabled %u; on core %u\n", ChanelNumber, ccd->TL, ccd->DISDL, ccd->DIPAN, ccd->AR, ccd->D1R,
+                           ccd->RR, ccd->PCMS, ccd->LPCTL, ccd->OCT, ccd->FNS, CommonData->MVOL, aica_settings.DSPEnabled,
+                           OSGetCoreId());
                 const u32 *d = (const u32 *)SA;
                 u32 any = 0;
                 for (int i = 0; i < 16; i++)

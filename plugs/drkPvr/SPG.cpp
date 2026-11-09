@@ -64,22 +64,27 @@ extern "C" void ExitCombo_HostPoll();
 u32 spg_InVblank = 0;
 s32 spg_ScanlineSh4CycleCounter = 0;
 u32 spg_ScanlineCount = 512;
+// The light gun, as Flycast (core/hw/pvr/spg.cpp): maple light-gun mode asks where the beam will be when it passes
+// x, y (640x480). The latch sets SPG_TRIGGER_POS and ends the maple DMA (SB_MDST = 0) without an interrupt; the DMA's
+// end interrupt comes at the next V-blank (maple_if.cpp). Off screen, nothing latches and SB_MDST clears at V-blank in.
 static u32 lightgun_line = 0xFFFF, lightgun_hpos;
-// maple light-gun mode: the line and H counter the beam will be at when it passes x, y (640x480)
+static bool maple_int_pending;
+extern u32 SB_MDST;
 void spg_lightgun_latch(int x, int y)
 {
+    static u32 flip;
+    maple_int_pending = true;
     if (y < 0 || y >= 480 || x < 0 || x >= 640)
-        lightgun_line = 0xFFFF;   // off screen: no latch
+        lightgun_line = 0xFFFF;
     else
     {
-        // the H counter runs from hbend to hstart across the visible line (tested in The House of the Dead 2: hits
-        // land where aimed); interlaced modes count lines per field
         lightgun_line = y / (SPG_CONTROL.interlace ? 2 : 1) + SPG_VBLANK_INT.vblank_out_interrupt_line_number;
-        const u32 h = (SPG_HBLANK.hstart - SPG_HBLANK.hbend) * x / 640 + SPG_HBLANK.hbend;
-        lightgun_hpos = h < 0x3FF ? h : 0x3FF;
+        // the same position twice reads as off screen (Flycast's finding), so wiggle by one
+        lightgun_line ^= (flip >> 1) & 1;
+        lightgun_hpos = (x + 286) ^ (flip & 1);
+        flip++;
     }
 }
-bool spg_lightgun_pending() { return lightgun_line != 0xFFFF; }
 u32 spg_CurrentScanline = (u32)-1;  // Explicit -1 cast, avoids signed/unsigned warning
 u32 spg_VblankCount = 0;
 u32 spg_VblankCountTotal = 0; // monotonic vblank count since boot, never reset
@@ -325,16 +330,22 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
         // the light gun sees the beam (spg_lightgun_latch)
         if (lightgun_line != 0xFFFF && lightgun_line == spg_CurrentScanline)
         {
+            maple_int_pending = false;
             SPG_TRIGGER_POS = ((lightgun_line & 0x3FF) << 16) | (lightgun_hpos & 0x3FF);
-            params.RaiseInterrupt(holly_MAPLE_VBOI);
-            extern void maple_gun_latched();
-            maple_gun_latched();
+            SB_MDST = 0;
             lightgun_line = 0xFFFF;
         }
 
         // Scanline-triggered interrupts
         if (SPG_VBLANK_INT.vblank_in_interrupt_line_number == spg_CurrentScanline)
+        {
+            if (maple_int_pending)
+            {
+                maple_int_pending = false;
+                SB_MDST = 0;
+            }
             params.RaiseInterrupt(holly_SCANINT1);
+        }
 
         if (SPG_VBLANK_INT.vblank_out_interrupt_line_number == spg_CurrentScanline)
             params.RaiseInterrupt(holly_SCANINT2);
