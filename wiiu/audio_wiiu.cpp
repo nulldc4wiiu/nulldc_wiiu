@@ -54,7 +54,8 @@ static inline u32 queued() { return (write_pos - play_pos) & (RING - 1); }
 extern "C" u32 wiiu_audio_queued() { return ax_ready ? queued() : 0; }
 
 static void start_voices();
-static volatile bool want_start;   // exp_aica_thread: restart the voices from the frame callback
+static volatile bool want_start;
+u32 wiiu_keyons, wiiu_keyons_zero;   // sgc_if.cpp KEY_ON   // exp_aica_thread: restart the voices from the frame callback
 static void frame_callback()
 {
     if (!ax_ready)
@@ -271,8 +272,9 @@ void wii_audio_push_sample(s16 l, s16 r)
     {
         const u32 n = speed_n;
         printf("[audio] 1 s of samples: peak %u, queued %u, playing %d, underruns %u, dropped blocks %u, waits %u ms, "
-               "playback speed %.0f%%, stalls %u\n", stat_peak, queued(), playing, stat_underruns, stat_drops, stat_waits,
-               n ? speed_sum / n * 100.0f : 100.0f, stat_stalls);
+               "playback speed %.0f%%, stalls %u; key-ons %u (%u on zero data)\n", stat_peak, queued(), playing, stat_underruns,
+               stat_drops, stat_waits, n ? speed_sum / n * 100.0f : 100.0f, stat_stalls, wiiu_keyons, wiiu_keyons_zero);
+        wiiu_keyons = wiiu_keyons_zero = 0;
         stat_samples = stat_peak = stat_drops = stat_waits = stat_underruns = stat_stalls = 0;
         speed_sum = 0.0f;
         speed_n = 0;

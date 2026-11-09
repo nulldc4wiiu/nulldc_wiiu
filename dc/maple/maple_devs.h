@@ -29,6 +29,8 @@ struct maple_device
 	virtual void OnSetup(){};
 	virtual ~maple_device();
 	virtual u32 Dma(u32 Command,u32* buffer_in,u32 buffer_in_len,u32* buffer_out,u32& buffer_out_len)=0;
+	// maple light-gun mode (DMA pattern 2): latch the gun's screen position; false if this isn't a gun
+	virtual bool get_lightgun_pos() { return false; }
 };
 
 maple_device* maple_Create(MapleDeviceType type);

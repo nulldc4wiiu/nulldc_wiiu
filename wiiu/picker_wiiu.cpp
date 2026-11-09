@@ -202,6 +202,7 @@ void draw(u32 *px)
 // Options page (picker_core); main_wiiu.cpp reads them with wiiu_picker_options, picker shown or not
 const char *const on_off[] = { "on", "off" }, *const off_on[] = { "off", "on" };
 const char *const sizes[] = { "960x720", "640x480" }, *const slow_sound[] = { "slows down", "keeps pitch" };
+const char *const sound_buf[] = { "100 ms", "46 ms" };
 const picker_option options[] = {
     { "fastmem", "Fast memory",
       "Dreamcast memory mapped straight into the Wii U's: about 12% faster in 3D games. Turn it off if a game "
@@ -215,6 +216,22 @@ const picker_option options[] = {
     { "slow_sound", "Sound when slow",
       "When a game runs below full speed, its sound either slows down with it (smooth, lower pitch) or keeps "
       "its pitch (short gaps).", slow_sound, 2, 1 },
+    // the console-tested speed settings (main_wiiu.cpp's defaults); wiiu.cfg still overrides any of them
+    { "cores", "Use all CPU cores",
+      "Graphics and sound mixing on their own cores, away from the emulated CPU: the biggest speedup (Soulcalibur "
+      "fights 97% to 140%). Next start.", on_off, 2, 0 },
+    { "jit_fast", "Faster CPU code",
+      "Speedups in the emulated CPU's translated code (memory addressing, vector maths, block lookup, store "
+      "queue). Turn it off if a game behaves oddly. Next start.", on_off, 2, 0 },
+    { "smooth", "Smooth frames",
+      "Lets two finished frames wait to be shown, so fewer are dropped when frames arrive in bursts. Adds one "
+      "frame of delay. Next start.", on_off, 2, 0 },
+    { "code_check", "Reloaded code check",
+      "Catches games that load new code over old (fixes Marvel vs. Capcom 2's crash in attract mode). Costs "
+      "nothing in other games. Next start.", on_off, 2, 0 },
+    { "sound_buf", "Sound buffer",
+      "100 ms means fewer gaps when a game slows down; 46 ms means less delay between picture and sound. Next start.",
+      sound_buf, 2, 0 },
 };
 int options_count() { return (int)(sizeof(options) / sizeof(options[0])); }
 const char *option_label(int i) { return options[i].label; }
@@ -282,6 +299,18 @@ void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *r
     *lightgun = picker_core_option(1) == 1;   // off_on: index 1 is "on"
     *render_width = picker_core_option(2) == 1 ? 640 : 960;
     *keep_pitch = picker_core_option(3) == 1;
+}
+
+// the speed settings, read at startup (before the threads exist), from the same config.txt
+void wiiu_picker_speed_options(const char *home, bool *cores, bool *jit_fast, bool *smooth, bool *code_check,
+                               int *sound_buffer_ms)
+{
+    setup(home);
+    *cores = picker_core_option(4) == 0;
+    *jit_fast = picker_core_option(5) == 0;
+    *smooth = picker_core_option(6) == 0;
+    *code_check = picker_core_option(7) == 0;
+    *sound_buffer_ms = picker_core_option(8) == 0 ? 100 : 0;
 }
 
 bool wiiu_pick_game(const char *home, char *path, size_t size)

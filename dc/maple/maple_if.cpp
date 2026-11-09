@@ -32,6 +32,10 @@ void maple_DoDma();
 //ddt/etc are just hacked for wince to work
 //now with proper maple delayed dma maby its time to look into it ?
 bool maple_ddt_pending_reset=false;
+// a DMA with a light-gun latch ends when the gun has seen the beam (spg_lightgun_latch), not after its transfer time
+static bool gun_wait;
+bool spg_lightgun_pending();   // SPG.cpp
+void maple_gun_latched() { gun_wait = false; }
 void maple_vblank()
 {
 	if (SB_MDEN &1)
@@ -168,6 +172,9 @@ void maple_DoDma()
 		}
 		else
 		{
+			// pattern 2, light-gun mode: the bus in bits 16-17; its gun latches where it points
+			if (maple_op == 2 && MapleDevices[(header_1 >> 16) & 3][5])
+				gun_wait = MapleDevices[(header_1 >> 16) & 3][5]->get_lightgun_pos() && spg_lightgun_pending();
 			addr += 1 * 4;
 		}
 	}
@@ -186,7 +193,9 @@ void maple_Update(u32 cycles)
 		maple_dma_pending-=cycles;
 		if (SB_MDEN&1)
 		{
-			if (maple_dma_pending<=0)
+			if (maple_dma_pending<=0 && gun_wait)
+				maple_dma_pending = 1;   // check again until the latch
+			else if (maple_dma_pending<=0)
 			{
 				SB_MDST=0;
 				asic_RaiseInterrupt(holly_MAPLE_DMA);

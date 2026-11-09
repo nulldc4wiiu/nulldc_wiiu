@@ -726,86 +726,60 @@ extern "C" const DC_KeyboardReport* GetKeyboardReport(int port);
 // ============================================================================
 const char* maple_sega_lightgun_name = "Dreamcast Gun";
 
+// The gun, as Flycast does it (works with The House of the Dead 2): it answers as a controller (MFID_0_Input with
+// the gun function), and its position isn't in that answer. In light-gun mode (maple DMA pattern 2) the PVR latches
+// the beam position into SPG_TRIGGER_POS at the line the gun sees, and raises the maple V-blank-over interrupt.
+void spg_lightgun_latch(int x, int y);   // SPG.cpp
+
 struct maple_lightgun : maple_base
 {
-	// Writes the standard device descriptor words (shared by DeviceRequest,
-	// DeviceStatus, AllStatusReq so we don't repeat ourselves).
-	void WriteDescriptor()
-	{
-		// Function type: light gun only — NOT combined with MFID_0_Input.
-		// Real Stunner advertises MFID_7_LightGun exclusively.
-		w32(MFID_7_LightGun);
-
-		// Capability sub-words (light gun has no extra capability data)
-		w32(0x00000000);
-		w32(0x00000000);
-		w32(0x00000000);
-
-		w8(0xFF);   // Area code (world)
-		w8(0x00);   // Direction
-
-		wstr(maple_sega_lightgun_name, 30);
-		wstr(maple_sega_brand,         60);
-
-		w16(0x01AE); // Standby power
-		w16(0x01F4); // Max power
-	}
-
 	virtual u32 dma(u32 cmd)
 	{
 		switch (cmd)
 		{
-		// ----------------------------------------------------------------
-		// Device enumeration — BIOS sends all three of these during boot.
-		// Respond identically for each so enumeration always succeeds.
-		// ----------------------------------------------------------------
 		case MDC_DeviceRequest:
 		case MDC_DeviceStatus:
 		case MDC_AllStatusReq:
-			printf("[LightGun] MDC_DeviceRequest/Status cmd=0x%02X port=%d\n", cmd, bus_id);
-			WriteDescriptor();
+			w32(MFID_7_LightGun | MFID_0_Input);
+			w32(0);            // light gun
+			w32(0xFE000000);   // controller: A, B, Start, D-pad
+			w32(0);
+			w8(0x01);          // area: North America
+			w8(0);             // direction
+			wstr(maple_sega_lightgun_name, 30);
+			wstr(maple_sega_brand, 60);
+			w16(0x0069);       // standby current, 10.5 mA
+			w16(0x0120);       // maximum, 28.8 mA
 			return MDRS_DeviceStatus;
 
 		case MDC_DeviceReset:
 		case MDC_DeviceKill:
-			printf("[LightGun] Reset/Kill cmd=0x%02X port=%d\n", cmd, bus_id);
 			return MDRS_DeviceReply;
 
-		// ----------------------------------------------------------------
-		// Input poll — called every frame by the game
-		// ----------------------------------------------------------------
 		case MDCF_GetCondition:
 			{
 				PlainJoystickState pjs;
-				config->GetInput(&pjs); // -> UpdateLightGunState()
-
-				u16 gx = GetLightGunX(bus_id);
-				u16 gy = GetLightGunY(bus_id);
-
-				printf("[LightGun] GetCondition port=%d kcode=0x%04X x=%d y=%d\n",
-				       bus_id, pjs.kcode, gx, gy);
-
-				// Function word
-				w32(MFID_7_LightGun);
-
-				// Button state (active-low)
-				w16(pjs.kcode);
-
-				// Gun coordinates
-				w16(gx);  // 0-639 or 0xFFFF
-				w16(gy);  // 0-479 or 0xFFFF
-
-				// Pad to 4-byte boundary (one dummy byte — total data = 12 bytes = 3 words)
-				w16(0x0000);
+				config->GetInput(&pjs);   // -> UpdateLightGunState()
+				w32(MFID_0_Input);
+				w16(pjs.kcode | 0xFF01);  // the gun has A (trigger), B, Start and the D-pad
+				w16(0xFFFF);
+				w32(0x80808080);
 			}
 			return MDRS_DataTransfer;
 
 		default:
-			printf("[LightGun] UNKNOWN cmd=0x%02X port=%d\n", cmd, bus_id);
 			return MDRE_UnknownFunction;
 		}
 	}
+
+	virtual bool get_lightgun_pos()
+	{
+		const u16 x = GetLightGunX(bus_id), y = GetLightGunY(bus_id);
+		spg_lightgun_latch(x == 0xFFFF ? -1 : x, y == 0xFFFF ? -1 : y);
+		return true;
+	}
 };
+
 
 // ============================================================================
 // Maracas (Samba de Amigo)

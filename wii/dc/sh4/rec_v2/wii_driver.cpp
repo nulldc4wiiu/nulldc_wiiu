@@ -172,7 +172,7 @@ void ppc_bx(void* dst,u32 LK)
 extern "C" { int g_exp_fm_x; }
 #ifdef WIIU_INSTRUMENT
 int g_prof_links;
-extern u32 g_cnt_dyn;
+extern u32 g_cnt_dyn, g_cnt_exit[8];
 #endif
 extern u32 g_wiiu_fm_window;
 extern int g_wii_fastmem_active;
@@ -1299,6 +1299,20 @@ void ngen_End(DecodedBlock* block)
 	// UpdateINTC -> Do_Exception (reads r[15], swaps the register bank); that
 	// case brackets the call with reg_flush_all()/reg_reload_all() locally.
 	// shop_ifb and the canonical fallback similarly self-bracket.
+#ifdef WIIU_INSTRUMENT
+	if (g_prof_links)
+	{
+		// prof_links: every block end by kind (0 conditional, 1 static, 2 dynamic call, 3 dynamic jump, 4 return,
+		// 5 interrupt check); rarg1/rarg2 are free and lwz/addi/stw leave CR0 alone
+		const u32 bt = block->BlockType;
+		const int kind = bt == BET_Cond_0 || bt == BET_Cond_1 ? 0 : bt == BET_StaticCall || bt == BET_StaticJump ? 1
+		               : bt == BET_DynamicCall ? 2 : bt == BET_DynamicJump ? 3 : bt == BET_DynamicRet ? 4 : 5;
+		u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_cnt_exit[kind]);
+		ppc_lwz(ppc_rarg2,ppc_rarg1,lo);
+		ppc_addi(ppc_rarg2,ppc_rarg2,1);
+		ppc_stw(ppc_rarg2,ppc_rarg1,lo);
+	}
+#endif
 	switch(block->BlockType)
 	{
 	case BET_Cond_0:
@@ -1429,6 +1443,16 @@ void ngen_End(DecodedBlock* block)
 			}
 		}
 		// generic path starts here (the IC's fall-through target)
+#ifdef WIIU_INSTRUMENT
+		if (g_prof_links)
+		{
+			// prof_links: exits past the inline cache, call/jump in [6], returns in [7]; rarg0 holds the target
+			u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_cnt_exit[block->BlockType == BET_DynamicRet ? 7 : 6]);
+			ppc_lwz(ppc_rarg2,ppc_rarg1,lo);
+			ppc_addi(ppc_rarg2,ppc_rarg2,1);
+			ppc_stw(ppc_rarg2,ppc_rarg1,lo);
+		}
+#endif
 
 		if (get_bcache_preset())
 		{

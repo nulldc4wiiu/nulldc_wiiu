@@ -130,6 +130,7 @@ extern "C" uint8_t PAD_TriggerR(int pad) { return 0; }
 // libwiidrc drives the GamePad in vWii mode; here VPAD reads it and reports it in libwiidrc's terms, so the
 // controller plugin's GamePad mapping works unchanged
 static u32 drc_buttons;
+extern volatile bool wiiu_dump_request;
 static s16 drc_lx, drc_ly;
 
 bool WiiDRC_Inited() { return true; }
@@ -153,6 +154,10 @@ bool WiiDRC_ScanPads()
         if (st.hold & m.vpad)
             b |= m.drc;
     drc_buttons = b;
+    // GamePad L + R + ZL + ZR + Y: dump the next frame and a thumbnail to the log (main_wiiu.cpp), for rendering bugs
+    const u32 combo = VPAD_BUTTON_L | VPAD_BUTTON_R | VPAD_BUTTON_ZL | VPAD_BUTTON_ZR | VPAD_BUTTON_Y;
+    if ((st.hold & combo) == combo && (st.trigger & combo))
+        wiiu_dump_request = true;
     // libwiidrc's stick reads about +-73; the plugin scales that by 7/4 to the Dreamcast's +-128
     drc_lx = (s16)(st.leftStick.x * 73.0f);
     drc_ly = (s16)(st.leftStick.y * 73.0f);

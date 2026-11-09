@@ -581,6 +581,19 @@ struct ChannelEx
             CA = 0;
             step.full = 0;
             loop.looped = false;
+#ifdef __WIIU__
+            {
+                // the [audio] line's key-on counts: how many start on sample data that reads as all zero here (the
+                // console's chime was silent only with mixing on another core; Cemu plays it)
+                extern u32 wiiu_keyons, wiiu_keyons_zero;
+                wiiu_keyons++;
+                const u32 *d = (const u32 *)SA;
+                u32 any = 0;
+                for (int i = 0; i < 16; i++)
+                    any |= d[i];
+                wiiu_keyons_zero += !any;
+            }
+#endif
             adpcm.Reset(this);
             StepStreamInitial(this);
 

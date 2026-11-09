@@ -6,6 +6,7 @@
 #include "plugs/drkPvr/regs.h"
 #include "plugs/drkPvr/ta.h"
 #include "wiiu_frame.h"
+#include <math.h>
 #include "dc/sh4/ccn.h"               // CCN_QACR0/1 (wiiu_sqw_fast)
 #include "dc/mem/sh4_internal_reg.h"  // sq_both
 #include "dc/mem/sh4_mem.h"           // mem_b
@@ -144,7 +145,7 @@ struct FrameDecoder
     {
         if (list != 1 || dec->n_mp >= WIIU_MAX_MV_PARAMS)
             return;
-        dec->mp[dec->n_mp++] = { dec->n_mv_tris, 0, p->isp.full >> 29 };
+        dec->mp[dec->n_mp++] = { dec->n_mv_tris, 0, p->isp.full >> 29, (p->isp.full >> 27) & 3 };
     }
     static void fastcall AppendModVolVertexA(TA_ModVolA *a) { mv_a = *a; }
     static void fastcall AppendModVolVertexB(TA_ModVolB *b)
@@ -309,13 +310,30 @@ static float fb_scale_x = 1.0f, fb_scale_y = 1.0f;
 
 // the canvas the TA geometry is in, as gxRend.cpp sizes it (same presets): the video mode's scale, a forced
 // width for 240p games that render narrow, the vertical scaler factor and the pixel-doubling 320-wide modes
+int wiiu_exp_canvas_regs = 1;   // exp_canvas_regs=0: always 640x480, as before
 static void canvas(float &w, float &h)
 {
+    // the framebuffer the video output reads (FB_R_SIZE, one field when interlaced) is what the game rendered for:
+    // 320 wide (Gunbird 2) or a progressive 240 lines get the canvas they were drawn on, not the top-left of 640x480
+    const u32 size = FB_R_SIZE, depth = FB_R_CTRL.fb_depth, bpp = depth == 2 ? 3 : depth == 3 ? 4 : 2;
+    const u32 fw = ((size & 0x3FF) + 1) * 4 / bpp, fh = ((size >> 10) & 0x3FF) + 1, inter = SPG_CONTROL.interlace;
+    if (wiiu_exp_canvas_regs && FB_R_CTRL.fb_enable)
+    {
+        fb_scale_x = fw <= 320 ? 0.5f : 1.0f;
+        fb_scale_y = !inter && fh <= 288 ? 0.5f : 1.0f;
+    }
+    static u32 logged;
+    if (logged != (fw | fh << 11 | inter << 22 | (VO_CONTROL >> 8 & 1) << 23))
+    {
+        logged = fw | fh << 11 | inter << 22 | (VO_CONTROL >> 8 & 1) << 23;
+        printf("[video] framebuffer %ux%u, interlace %u, pixel double %u, scaler %08x: canvas scale %g x %g\n", fw, fh,
+               inter, VO_CONTROL >> 8 & 1, SCALER_CTL.full, fb_scale_x, fb_scale_y);
+    }
     w = 640.0f * fb_scale_x;
     h = 480.0f * fb_scale_y;
     bool forced = false;
     const int forced_w = get_canvas_width_preset();
-    if (forced_w >= 320 && forced_w <= 1280 && fb_scale_y == 0.5f)
+    if (!wiiu_exp_canvas_regs && forced_w >= 320 && forced_w <= 1280 && fb_scale_y == 0.5f)
     {
         w = (float)forced_w;
         forced = true;
@@ -849,6 +867,11 @@ void SoftReset()
 
 // ---- worker: decode ---------------------------------------------------------------------------------------
 
+extern "C" int get_controller_type();
+extern "C" u16 GetLightGunX(int port);
+extern "C" u16 GetLightGunY(int port);
+int wiiu_depth_stats;   // depth_stats=1: log the 1/w spread every 60 renders (test setting)
+int wiiu_exp_depth_drawn = 1;   // exp_depth_drawn=0: the depth scale from every vertex and volume, as before
 int wiiu_dump_render;   // dump_render=N: log the decoded frame at render N
 void wiiu_ta_decode(WiiuFrame *f)
 {
@@ -879,6 +902,43 @@ void wiiu_ta_decode(WiiuFrame *f)
         while (p <= last);
         i = end;
     }
+    if (wiiu_depth_stats && wiiu_renders % 60 == 0)
+    {
+        // depth_stats: how far the largest 1/w sits above the bulk (log10 buckets, strips' vertices)
+        u32 hist[12] = {};
+        for (u32 k = 0; k < f->nv; k++)
+        {
+            const float z = f->v[k].z;
+            int b = z <= 0.0f || z != z ? 0 : z >= 1e30f ? 11 : (int)floorf(log10f(z)) + 5;
+            hist[b < 0 ? 0 : b > 11 ? 11 : b]++;
+        }
+        printf("[depth] render %u max 1/w %g; 1/w by decade 1e-4..1e5: %u %u %u %u %u %u %u %u %u %u, inf %u\n", wiiu_renders,
+               f->max_invw, hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], hist[8], hist[9], hist[10], hist[11]);
+    }
+    // the depth scale (1 / the largest 1/w) from the polygons drawn: strips of 3 or more vertices. A larger 1/w
+    // elsewhere (Jet Grind Radio's shadow volumes: 100000) squeezed the whole scene into depths ~1e-5, where the
+    // clip-space conversion rounds them together and near surfaces flicker through each other
+    if (wiiu_exp_depth_drawn)
+    {
+        float m = 0.0f;
+        for (u32 i = 0; i < f->ns; i++)
+            if (f->s[i].count >= 3)
+                for (u32 k = f->s[i].first; k < f->s[i].first + f->s[i].count && k < f->nv; k++)
+                    if (f->v[k].z > m && f->v[k].z < 1e30f)
+                        m = f->v[k].z;
+        // modifier volumes left out: Jet Grind Radio's run to 1/w 100000 toward the camera. Their nearer vertices
+        // clamp to the nearest depth, still in front of every polygon (the 5% headroom), which is all the volume
+        // test asks of them
+        m *= 1.05f;
+        static u32 logged;
+        if (m < f->max_invw && logged < 5)
+        {
+            logged++;
+            printf("[gx2] depth scale from drawn vertices: largest 1/w %g, not %g\n", m, f->max_invw);
+        }
+        if (m > 0.0f)
+            f->max_invw = m;
+    }
     if (f->has_bg && f->nv + 4 <= WIIU_MAX_VERTICES && f->ns < WIIU_MAX_STRIPS)
     {
         // drawn without depth; mid-range so it can't be clipped against either depth plane
@@ -892,10 +952,48 @@ void wiiu_ta_decode(WiiuFrame *f)
         }
         f->s[f->ns++] = st;
     }
+    // light gun: a Dreamcast gun has no on-screen cursor (it was aimed down the barrel at a CRT), so draw a crosshair
+    // where the Wii Remote points: two bars, last in the translucent list, without depth
+    if (get_controller_type() == 1 && GetLightGunX(0) != 0xFFFF && f->nv + 8 <= WIIU_MAX_VERTICES && f->ns + 2 <= WIIU_MAX_STRIPS)
+    {
+        const float sx = f->canvas_w / 640.0f, sy = f->canvas_h / 480.0f;
+        const float cx = GetLightGunX(0) * sx, cy = GetLightGunY(0) * sy, len = 12.0f * sx, th = 1.5f * sx;
+        const float z = f->max_invw > 0.0f ? f->max_invw : 1.0f;
+        const float bars[2][4] = { { cx - len, cy - th, cx + len, cy + th }, { cx - th, cy - len, cx + th, cy + len } };
+        for (const auto &b : bars)
+        {
+            WiiuStrip st = {};
+            st.first = f->nv;
+            st.count = 4;
+            st.list = 2;
+            st.isp = 7u << 29 | 1u << 26 | 1u << 23;   // depth always, no depth write, Gouraud
+            st.tsp = 1u << 29 | 2u << 22;               // source one, destination zero, no fog
+            const float xy[4][2] = { { b[0], b[1] }, { b[2], b[1] }, { b[0], b[3] }, { b[2], b[3] } };
+            for (const auto &c : xy)
+                f->v[f->nv++] = { c[0], c[1], z, 0xFF3030FFu, 0, 0.0f, 0.0f };
+            f->s[f->ns++] = st;
+        }
+    }
     if (wiiu_dump_render && wiiu_renders >= (u32)wiiu_dump_render)
     {
         wiiu_dump_render = 0;
         printf("[frame] renders %u: %u strips, %u vertices, max 1/w %g\n", wiiu_renders, f->ns, f->nv, f->max_invw);
+        for (u32 i = 0; i < f->n_mp; i++)
+        {
+            const WiiuModVol &m = f->mp[i];
+            float zmin = 1e30f, zmax = -1e30f, xmin = 1e30f, xmax = -1e30f, ymin = 1e30f, ymax = -1e30f;
+            u32 tiny = 0;
+            for (u32 k = m.first * 3; k < (m.first + m.count) * 3 && k < f->n_mv_tris * 3; k++)
+            {
+                const WiiuMvVertex &v = f->mv[k];
+                zmin = v.z < zmin ? v.z : zmin; zmax = v.z > zmax ? v.z : zmax;
+                xmin = v.x < xmin ? v.x : xmin; xmax = v.x > xmax ? v.x : xmax;
+                ymin = v.y < ymin ? v.y : ymin; ymax = v.y > ymax ? v.y : ymax;
+                tiny += !(v.z > 1e-6f);
+            }
+            printf("[frame] volume %u: cull %u, first %u, %u triangles, mode %u, 1/w %g..%g (%u <= 1e-6), x %g..%g, y %g..%g\n", i,
+                   m.cull, m.first, m.count, m.mode, zmin, zmax, tiny, xmin, xmax, ymin, ymax);
+        }
         for (u32 i = 0; i < f->ns; i++)
         {
             const WiiuStrip &st = f->s[i];

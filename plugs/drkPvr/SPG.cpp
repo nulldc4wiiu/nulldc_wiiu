@@ -64,6 +64,22 @@ extern "C" void ExitCombo_HostPoll();
 u32 spg_InVblank = 0;
 s32 spg_ScanlineSh4CycleCounter = 0;
 u32 spg_ScanlineCount = 512;
+static u32 lightgun_line = 0xFFFF, lightgun_hpos;
+// maple light-gun mode: the line and H counter the beam will be at when it passes x, y (640x480)
+void spg_lightgun_latch(int x, int y)
+{
+    if (y < 0 || y >= 480 || x < 0 || x >= 640)
+        lightgun_line = 0xFFFF;   // off screen: no latch
+    else
+    {
+        // the H counter runs from hbend to hstart across the visible line (tested in The House of the Dead 2: hits
+        // land where aimed); interlaced modes count lines per field
+        lightgun_line = y / (SPG_CONTROL.interlace ? 2 : 1) + SPG_VBLANK_INT.vblank_out_interrupt_line_number;
+        const u32 h = (SPG_HBLANK.hstart - SPG_HBLANK.hbend) * x / 640 + SPG_HBLANK.hbend;
+        lightgun_hpos = h < 0x3FF ? h : 0x3FF;
+    }
+}
+bool spg_lightgun_pending() { return lightgun_line != 0xFFFF; }
 u32 spg_CurrentScanline = (u32)-1;  // Explicit -1 cast, avoids signed/unsigned warning
 u32 spg_VblankCount = 0;
 u32 spg_VblankCountTotal = 0; // monotonic vblank count since boot, never reset
@@ -304,6 +320,16 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 s_exit_poll_lines = 0;
                 ExitCombo_HostPoll();
             }
+        }
+
+        // the light gun sees the beam (spg_lightgun_latch)
+        if (lightgun_line != 0xFFFF && lightgun_line == spg_CurrentScanline)
+        {
+            SPG_TRIGGER_POS = ((lightgun_line & 0x3FF) << 16) | (lightgun_hpos & 0x3FF);
+            params.RaiseInterrupt(holly_MAPLE_VBOI);
+            extern void maple_gun_latched();
+            maple_gun_latched();
+            lightgun_line = 0xFFFF;
         }
 
         // Scanline-triggered interrupts

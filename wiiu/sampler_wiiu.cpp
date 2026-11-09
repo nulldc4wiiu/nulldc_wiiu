@@ -4,6 +4,8 @@
 // measure their idle time. Results go out as [samp] lines at the bench's RESULT; scratch/nulldc-samp-report.sh reads them.
 #ifdef WIIU_INSTRUMENT
 #include <coreinit/alarm.h>
+#include <coreinit/core.h>
+#include <coreinit/cache.h>
 #include <coreinit/context.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
@@ -19,7 +21,7 @@
 
 extern u8 *CodeCache;
 extern u32 wiiu_fm_pool_lo(), wiiu_fm_pool_hi();   // wii_driver.cpp
-u32 g_cnt_dyn, g_cnt_getcode, g_cnt_compile;       // dynamic block exits, table misses into C, blocks compiled
+u32 g_cnt_dyn, g_cnt_getcode, g_cnt_compile, g_cnt_exit[8];       // dynamic block exits, table misses into C, blocks compiled
 
 int wiiu_sampler_mode, wiiu_sampler_how;
 OSThread *wiiu_emu_thread, *wiiu_main_thread;
@@ -27,6 +29,7 @@ OSThread *wiiu_emu_thread, *wiiu_main_thread;
 static const u32 MAX_SAMPLES = 512 * 1024;
 static u32 *samples, *callers;
 static volatile u32 by_thread[4];   // samples by current thread: emulator, main, other, none
+static volatile u32 by_core[3];     // and by the core the alarm interrupted
 static volatile u32 n_samples, kept;
 static volatile bool stop_threads, sampler_done;
 static OSThread sampler, spinner[3];
@@ -55,6 +58,7 @@ static void alarm_cb(OSAlarm *, OSContext *c)
     {
         const OSThread *t = OSGetCurrentThread();
         by_thread[!t ? 3 : t == wiiu_emu_thread ? 0 : t == wiiu_main_thread ? 1 : 2]++;
+        by_core[OSGetCoreId() % 3]++;
         add_sample(c->srr0, c->lr);
     }
 }
@@ -173,7 +177,8 @@ void wiiu_sampler_report()
            (void *)&wiiu_sampler_report);
     printf("[samp] idle: core 0 %.1f%%, core 1 %.1f%%, core 2 %.1f%%\n", 100.0 * idle_kept[0] / (span_kept ? span_kept : 1),
            100.0 * idle_kept[2] / (span_kept ? span_kept : 1), 100.0 * idle_kept[1] / (span_kept ? span_kept : 1));
-    printf("[samp] threads: emulator %u, main %u, other %u, none %u\n", by_thread[0], by_thread[1], by_thread[2], by_thread[3]);
+    printf("[samp] threads: emulator %u, main %u, other %u, none %u; cores 0/1/2: %u %u %u\n", by_thread[0], by_thread[1],
+           by_thread[2], by_thread[3], by_core[0], by_core[1], by_core[2]);
     printf("[samp] counters: dynamic exits %u, table misses %u, compiled %u\n", g_cnt_dyn, g_cnt_getcode, g_cnt_compile);
     if (!n)
         return;
@@ -294,3 +299,53 @@ void wiiu_sampler_report()
     printf("[samp] done\n");
 }
 #endif   // WIIU_INSTRUMENT
+
+// memlat=1: dependent-load latency in MEM1 (eDRAM; WHB's graphics init owns all of it, so through its allocator) and
+// MEM2 (the default heap), timed on the emulator's core at the bench start: a random pointer chase over 16 KB (in L1),
+// 1 MB (in core 1's L2) and 4 MB
+extern "C" void *GfxHeapAllocMEM1(uint32_t size, uint32_t alignment);   // libwhb gfx_heap
+extern "C" void GfxHeapFreeMEM1(void *block);
+static double chase(u32 *buf, u32 words)
+{
+    // one cycle through every 32-byte line, in random order
+    const u32 lines = words / 8;
+    u32 *order = (u32 *)malloc(lines * 4);
+    if (!order)
+        return -1.0;
+    for (u32 i = 0; i < lines; i++)
+        order[i] = i;
+    u32 seed = 12345;
+    for (u32 i = lines - 1; i > 0; i--)
+    {
+        seed = seed * 1103515245u + 12345u;
+        const u32 j = (seed >> 8) % (i + 1), t = order[i];
+        order[i] = order[j];
+        order[j] = t;
+    }
+    for (u32 i = 0; i < lines; i++)
+        buf[order[i] * 8] = (u32)(uintptr_t)&buf[order[(i + 1) % lines] * 8];
+    free(order);
+    DCFlushRange(buf, words * 4);
+    const u32 steps = 2000000;
+    volatile u32 *p = (volatile u32 *)buf;
+    for (u32 i = 0; i < lines; i++)   // warm the TLB and caches as far as they hold
+        p = (volatile u32 *)(uintptr_t)*p;
+    const OSTime t0 = OSGetSystemTime();
+    for (u32 i = 0; i < steps; i++)
+        p = (volatile u32 *)(uintptr_t)*p;
+    const OSTime t1 = OSGetSystemTime();
+    return OSTicksToNanoseconds(t1 - t0) / (double)steps + (p ? 0.0 : 1e-9);
+}
+void wiiu_memlat()
+{
+    const u32 sizes[3] = { 16 * 1024, 1024 * 1024, 4 * 1024 * 1024 };
+    u32 *m1 = (u32 *)GfxHeapAllocMEM1(sizes[2], 64);
+    u32 *m2 = (u32 *)memalign(64, sizes[2]);
+    printf("[memlat] core %u, MEM1 %p, MEM2 %p\n", OSGetCoreId(), (void *)m1, (void *)m2);
+    for (u32 s : sizes)
+        printf("[memlat] %5u KB: MEM1 %.1f ns/load, MEM2 %.1f ns/load\n", s / 1024, m1 ? chase(m1, s / 4) : -1.0,
+               m2 ? chase(m2, s / 4) : -1.0);
+    free(m2);
+    if (m1)
+        GfxHeapFreeMEM1(m1);
+}

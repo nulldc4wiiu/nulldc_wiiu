@@ -40,7 +40,7 @@ struct WiiuStrip
 // in WiiuFrame::mv; mode (its ISP word's top bits) 1 or 2 closes a volume, counting pixels inside or outside it
 struct WiiuModVol
 {
-    u32 first, count, mode;
+    u32 first, count, mode, cull;   // mode: ISP volume instruction (1 inside, 2 outside: closes it); cull: ISP cull mode
 };
 
 struct WiiuMvVertex

@@ -64,6 +64,8 @@ void wiiu_gx2_shutdown();
 void wiiu_gx2_thumbnail();
 void wiiu_audio_init();
 bool wiiu_pick_game(const char *home, char *path, size_t size);
+void wiiu_picker_speed_options(const char *home, bool *cores, bool *jit_fast, bool *smooth, bool *code_check,
+                               int *sound_buffer_ms);
 void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *render_width, bool *keep_pitch);
 void wiiu_gx2_set_render_width(int width);   // present_gx2.cpp
 extern float wiiu_audio_min_speed;          // audio_wiiu.cpp
@@ -183,7 +185,7 @@ extern "C" int g_frame_prof_preset;   // plugs/drkPvr/frame_prof.cpp
 u64 g_wiiu_prof[10];   // wiiu/prof_wiiu.h
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast, g_exp_aica_thread;
-extern int wiiu_exp_split_convert, g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
+extern int wiiu_depth_stats, wiiu_exp_depth_drawn, wiiu_exp_mv_cull, wiiu_exp_canvas_regs, wiiu_exp_split_convert, g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern u32 wiiu_bad_vertices;
 #ifdef WIIU_INSTRUMENT
 extern int wiiu_sampler_mode, wiiu_sampler_how, g_prof_links;
@@ -208,6 +210,13 @@ static FILE *log_file;
 static u32 probe_addr;
 static int fastmem = -1;   // wiiu.cfg fastmem=: 0 off, 1 on, 2 Cemu test mode; -1: the picker's option decides
 static bool controller_type_set;   // wiiu.cfg set g_controller_type: it wins over the picker's light gun option
+volatile bool wiiu_dump_request;
+int wiiu_ram_mem1;   // ram_mem1=1: Dreamcast RAM in MEM1 (_vmem.cpp; a test)
+static int memlat;   // memlat=1: MEM1/MEM2 load latency at the bench start (sampler_wiiu.cpp)
+void wiiu_memlat();   // GamePad combo (ogc_compat.cpp)
+u16 wiiu_auto_mask[16], wiiu_auto_hold;
+int wiiu_auto_n, wiiu_auto_every = 120, wiiu_auto_hold_rt, wiiu_gun_aim_x = -1, wiiu_gun_aim_y = -1;
+u32 wiiu_auto_hold_from;
 static int run_seconds, thumb_seconds, dump_test_seconds, gx2_priority;
 extern int wiiu_gpu_timing, wiiu_gx2_pipeline, wiiu_rt_width, wiiu_gx2_batch;   // present_gx2.cpp
 extern int wiiu_gx2_batch_check;   // present_gx2.cpp
@@ -260,6 +269,8 @@ void wiiu_bench_vblank()
         dma_first = dma_seg = wiiu_ta_dma_blocks;
         printf("[bench] start at vblank %u\n", vb);
 #ifdef WIIU_INSTRUMENT
+        if (memlat)
+            wiiu_memlat();
         wiiu_sampler_start();
 #endif
         return;
@@ -514,6 +525,48 @@ static void load_wiiu_cfg()
             wiiu_exp_frame_queue = atoi(value);
         else if (!strcmp(key, "exp_arm_thread"))
             g_exp_arm_thread = atoi(value);
+        else if (!strcmp(key, "auto_press") || !strcmp(key, "auto_hold"))
+        {
+            // buttons by name, comma separated: auto_press=start,a presses them in turn every auto_every vblanks;
+            // auto_hold=rt,a holds them from vblank auto_hold_from on
+            const bool hold = key[5] == 'h';
+            char list[128];
+            snprintf(list, sizeof(list), "%s", value);
+            for (char *t = strtok(list, ","); t; t = strtok(nullptr, ","))
+            {
+                static const struct { const char *n; u16 m; } names[] = { { "a", 1 << 2 }, { "b", 1 << 1 }, { "x", 1 << 10 },
+                    { "y", 1 << 9 }, { "start", 1 << 3 }, { "up", 1 << 4 }, { "down", 1 << 5 }, { "left", 1 << 6 },
+                    { "right", 1 << 7 }, { "none", 0 } };
+                if (hold && !strcmp(t, "rt"))
+                    wiiu_auto_hold_rt = 1;
+                for (const auto &n : names)
+                    if (!strcmp(t, n.n))
+                    {
+                        if (hold)
+                            wiiu_auto_hold |= n.m;
+                        else if (wiiu_auto_n < 16)
+                            wiiu_auto_mask[wiiu_auto_n++] = n.m;
+                    }
+            }
+        }
+        else if (!strcmp(key, "ram_mem1"))
+            wiiu_ram_mem1 = atoi(value);
+        else if (!strcmp(key, "memlat"))
+            memlat = atoi(value);
+        else if (!strcmp(key, "depth_stats"))
+            wiiu_depth_stats = atoi(value);
+        else if (!strcmp(key, "exp_depth_drawn"))
+            wiiu_exp_depth_drawn = atoi(value);
+        else if (!strcmp(key, "exp_mv_cull"))
+            wiiu_exp_mv_cull = atoi(value);
+        else if (!strcmp(key, "gun_aim"))
+            sscanf(value, "%d,%d", &wiiu_gun_aim_x, &wiiu_gun_aim_y);
+        else if (!strcmp(key, "auto_every"))
+            wiiu_auto_every = atoi(value) > 6 ? atoi(value) : 7;
+        else if (!strcmp(key, "auto_hold_from"))
+            wiiu_auto_hold_from = atoi(value);
+        else if (!strcmp(key, "exp_canvas_regs"))
+            wiiu_exp_canvas_regs = atoi(value);
         else if (!strcmp(key, "exp_split_convert"))
             wiiu_exp_split_convert = atoi(value);
         else if (!strcmp(key, "no_draw"))
@@ -680,12 +733,22 @@ int main(int argc, char **argv)
     g_idle_shinobi_preset = 0;
     // console-tested defaults (Soulcalibur fights 86% -> 141% in bench, 99% in real play); wiiu.cfg can still turn any of
     // them off. The GX2 and sound threads go on a core the JIT isn't on: 0 on a console, 2 in Cemu, whose codegen core is 0
-    wiiu_exp_gx2_core = g_exp_aica_thread = OSGetCodegenCore() == 0 ? 2 : 1;
-    g_exp_fm_x = g_exp_ps_ftrv = g_exp_sq_fast = wiiu_exp_frame_queue = wiiu_exp_split_convert = g_bcache_preset = 1;
-    g_jit_align_preset = 0;
-    g_jit_sbp_preset = 3;   // MvC2's module cache
-    audio_buffer_ms = 100;
-    audio_glide = 1;
+    // The options page can turn them off (config.txt, read here because the threads start before the picker runs).
+    {
+        bool cores = true, jit_fast = true, smooth = true, code_check = true;
+        int buffer = 100;
+        wiiu_picker_speed_options(home, &cores, &jit_fast, &smooth, &code_check, &buffer);
+        wiiu_exp_gx2_core = g_exp_aica_thread = !cores ? 0 : OSGetCodegenCore() == 0 ? 2 : 1;
+        wiiu_exp_split_convert = cores;
+        g_exp_fm_x = g_exp_ps_ftrv = g_exp_sq_fast = g_bcache_preset = jit_fast;
+        g_jit_align_preset = jit_fast ? 0 : 1;
+        wiiu_exp_frame_queue = smooth;
+        g_jit_sbp_preset = code_check ? 3 : 1;   // 3: MvC2's module cache too
+        audio_buffer_ms = buffer;
+        audio_glide = 1;
+        printf("[wiiu] speed options: cores %d, faster code %d, smooth frames %d, code check %d, sound buffer %d\n",
+               cores, jit_fast, smooth, code_check, buffer ? buffer : 46);
+    }
     load_wiiu_cfg();
     if (wiiu_exp_gx2_core)
     {
@@ -853,6 +916,32 @@ static int app_main()
                        wiiu_renders, wiiu_ta_lists, wiiu_ta_sq_blocks, wiiu_ta_dma_blocks, (u32)next_pc, wiiu_fastmem_status());
                 if (seconds % 5 == 0)
                     wiiu_disc_stats();
+#ifdef WIIU_INSTRUMENT
+                if (seconds % 5 == 0 && g_prof_links)
+                {
+                    // prof_links: block ends per emulated second, by kind, and lookups that missed into C
+                    extern u32 g_cnt_exit[8], g_cnt_getcode, g_cnt_dyn;
+                    static u32 last[10], last_vb;
+                    const u32 now[10] = { g_cnt_exit[0], g_cnt_exit[1], g_cnt_exit[2], g_cnt_exit[3], g_cnt_exit[4],
+                                          g_cnt_exit[5], g_cnt_getcode, g_cnt_dyn, g_cnt_exit[6], g_cnt_exit[7] };
+                    const float s = (wiiu_vblanks - last_vb) / 59.94f;
+                    if (s > 0.5f)
+                        printf("[exits] per emulated s: cond %.0fK, static %.0fK, dyn call %.0fK, dyn jump %.0fK, ret %.0fK, intr %.0fK; "
+                               "dispatch %.0fK (past inline cache: calls+jumps %.0fK, returns %.0fK), table misses %.0fK\n", (now[0] - last[0]) / s / 1e3f, (now[1] - last[1]) / s / 1e3f,
+                               (now[2] - last[2]) / s / 1e3f, (now[3] - last[3]) / s / 1e3f, (now[4] - last[4]) / s / 1e3f,
+                               (now[5] - last[5]) / s / 1e3f, (now[7] - last[7]) / s / 1e3f, (now[8] - last[8]) / s / 1e3f,
+                               (now[9] - last[9]) / s / 1e3f, (now[6] - last[6]) / s / 1e3f);
+                    memcpy(last, now, sizeof(last));
+                    last_vb = wiiu_vblanks;
+                }
+#endif
+        }
+        if (video && wiiu_dump_request)
+        {
+            wiiu_dump_request = false;
+            printf("[wiiu] frame dump requested at vblank %u\n", wiiu_vblanks);
+            wiiu_dump_render = wiiu_renders + 1;
+            wiiu_gx2_thumbnail();
         }
         if (video && thumb_seconds && seconds >= thumb_seconds)
         {

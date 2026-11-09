@@ -365,8 +365,13 @@ static volatile bool aica_stop, aica_started;
 static OSThread aica_thread;
 static void aica_apply_ops(u32 sample)
 {
-    while (ops_r != ops_w && (s32)(aica_ops[ops_r % AICA_OPS].sample - sample) <= 0)
+    while (ops_r != ops_w)
     {
+        // the queued op and the register values written before it, as the emulator's core published them (its
+        // sync orders the writes; on the console this core must not read them from before ops_w moved)
+        __asm__ volatile("sync" : : : "memory");
+        if ((s32)(aica_ops[ops_r % AICA_OPS].sample - sample) > 0)
+            break;
         const auto &op = aica_ops[ops_r % AICA_OPS];
         if (op.reg == 0xFFFF)
             aica_clear_looped_now(op.chan);

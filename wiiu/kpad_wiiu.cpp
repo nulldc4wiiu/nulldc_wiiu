@@ -1,6 +1,8 @@
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
+#include <vpad/input.h>
 #include "kpad_wiiu.h"
+#include <stdio.h>
 
 void wiiu_kpad_init()
 {
@@ -28,10 +30,24 @@ static uint32_t core_buttons(uint32_t h)
     return b;
 }
 
+static bool want_dpd[4];
+static uint32_t dpd_reads[4], dpd_valid[4];
 void wiiu_kpad_read(int chan, WiiuPad *pad)
 {
     KPADStatus st;
     KPADError err;
+    if (want_dpd[chan & 3] && ++dpd_reads[chan & 3] % 300 == 0)
+    {
+        // the light gun's pointer: enabling it before the remote is connected doesn't take, so keep asking while
+        // no position comes, and say how it goes
+        printf("[kpad] remote %d pointer: %u of the last 300 reads had a position\n", chan, dpd_valid[chan & 3]);
+        if (!dpd_valid[chan & 3])
+        {
+            KPADEnableDPD((KPADChan)chan);
+            VPADSetSensorBar(VPAD_CHAN_0, TRUE);
+        }
+        dpd_valid[chan & 3] = 0;
+    }
     if (KPADReadEx((KPADChan)chan, &st, 1, &err) < 1)
     {
         if (err != KPAD_ERROR_NO_SAMPLES)
@@ -42,6 +58,7 @@ void wiiu_kpad_read(int chan, WiiuPad *pad)
     pad->connected = true;
     if (st.posValid > 0)
     {
+        dpd_valid[chan & 3]++;
         pad->pointing = true;
         pad->px = st.pos.x;
         pad->py = st.pos.y;
@@ -80,6 +97,11 @@ void wiiu_kpad_read(int chan, WiiuPad *pad)
 
 void wiiu_kpad_pointer(int chan, bool on)
 {
+    want_dpd[chan & 3] = on;
+    // the sensor bar is powered from the console's side and stays off unless an app asks (the Wii U Menu does when
+    // it needs the pointer): without it the remote's camera sees nothing
+    if (on)
+        VPADSetSensorBar(VPAD_CHAN_0, TRUE);
     if (on)
         KPADEnableDPD((KPADChan)chan);
     else

@@ -62,7 +62,7 @@ static inline u32 rgba(u32 r, u32 g, u32 b) { return (r << 24) | (g << 16) | (b 
 // vblank into a VRAM-shaped snapshot (a memcpy, ~1 ms), and the worker converts from that.
 struct FbRegs
 {
-    u32 size, depth, sof1;
+    u32 size, depth, sof1, sof2, interlace, line_double, pixel_double;
 };
 static FbRegs fb_regs;
 static volatile u32 fb_regs_seq;   // 0 until the emulator shows a framebuffer (the picker's image stays up)
@@ -96,14 +96,16 @@ void wiiu_fb_capture()
 {
     if (!lock_ready || !FB_R_CTRL.fb_enable)
         return;
-    FbRegs r = { FB_R_SIZE, FB_R_CTRL.fb_depth, FB_R_SOF1 };
+    FbRegs r = { FB_R_SIZE, FB_R_CTRL.fb_depth, FB_R_SOF1, FB_R_SOF2, SPG_CONTROL.interlace, FB_R_CTRL.fb_line_double,
+                 (VO_CONTROL >> 8) & 1 };
     if (fb_wanted && vram_snap && OSFastMutex_TryLock(&snap_lock))
     {
         u32 bpp, w, h, stride;
         fb_geometry(r, bpp, w, h, stride);
-        const u32 start = r.sof1 & VRAM_MASK, len = stride * (h < 480 ? h : 480);
-        if (start + len <= VRAM_SIZE)
-            snap_range(start, start + len);
+        const u32 len = stride * (h < 480 ? h : 480);
+        for (u32 sof : { r.sof1, r.interlace ? r.sof2 : r.sof1 })
+            if ((sof & VRAM_MASK) + len <= VRAM_SIZE)
+                snap_range(sof & VRAM_MASK, (sof & VRAM_MASK) + len);
         fb_regs = r;
         fb_regs_seq = fb_regs_seq + 1;
         OSFastMutex_Unlock(&snap_lock);
@@ -123,17 +125,28 @@ static void convert_fb(void *)
     u32 bpp, w, h, stride;
     fb_geometry(r, bpp, w, h, stride);
     const u32 depth = r.depth;
-    const u32 cw = w < FB_MAX_W ? w : FB_MAX_W, ch = h < FB_MAX_H ? h : FB_MAX_H;
     const u8 *vram = vram_snap ? vram_snap : PVRPARAMS.vram;
-    u32 line = r.sof1 & 0x00FFFFFF;
+    // FB_R_SIZE gives one field: interlaced modes weave the second (FB_R_SOF2) between its lines, and the
+    // line- and pixel-doubled modes (240p, 320 wide) show each line or pixel twice
+    // (judged by size: fbtest sets pixel double on a 640-wide framebuffer)
+    const u32 ys = r.interlace || h <= 288 ? 2 : 1, xs = w <= 320 ? 2 : 1;
+    const u32 cw = w * xs < FB_MAX_W ? w * xs : FB_MAX_W, ch = h * ys < FB_MAX_H ? h * ys : FB_MAX_H;
+    static u32 logged;
+    if (logged != (w | h << 10 | ys << 20 | xs << 22 | r.interlace << 24 | depth << 25))
+    {
+        logged = w | h << 10 | ys << 20 | xs << 22 | r.interlace << 24 | depth << 25;
+        printf("[fb] %ux%u depth %u, interlace %u, line double %u, pixel double %u: shown %ux%u\n", w, h, depth,
+               r.interlace, r.line_double, r.pixel_double, cw, ch);
+    }
 
     OSFastMutex_Lock(&shared_lock);
-    for (u32 y = 0; y < ch; y++, line += stride)
+    for (u32 y = 0; y < ch; y++)
     {
+        const u32 line = ((r.interlace && (y & 1) ? r.sof2 : r.sof1) & 0x00FFFFFF) + y / ys * stride;
         u32 *out = &shared_rgba[y * FB_MAX_W];
         for (u32 x = 0; x < cw; x++)
         {
-            u32 a = line + x * bpp;
+            u32 a = line + x / xs * bpp;
             if (bpp == 2)
             {
                 u32 px = *host_ptr_xor((u16 *)&vram[vram_offset64(a)]);
@@ -149,6 +162,12 @@ static void convert_fb(void *)
             }
         }
     }
+    // the whole texture is shown: blank what this picture doesn't cover, not the last one's leftovers
+    for (u32 y = 0; y < FB_MAX_H; y++)
+        if (y >= ch)
+            memset(&shared_rgba[y * FB_MAX_W], 0, FB_MAX_W * 4);
+        else if (cw < FB_MAX_W)
+            memset(&shared_rgba[y * FB_MAX_W + cw], 0, (FB_MAX_W - cw) * 4);
     shared_w = cw;
     shared_h = ch;
     shared_seq = shared_seq + 1;
@@ -934,6 +953,7 @@ static void start_conv_helper()
         conv_helper_up = true;
     }
 }
+int wiiu_exp_mv_cull;   // exp_mv_cull=1: volume triangles culled by their ISP cull mode (Flycast); unproven, off
 int wiiu_exp_fix_inf;
 u32 wiiu_bad_vertices;   // infinite or NaN vertices seen (bench RESULT)
 // A point at the camera plane (Soulcalibur's floor, 4% of a fight's vertices) has an infinite 1/w, and w = 0 times an
@@ -1173,6 +1193,9 @@ static void draw_modvols()
         const WiiuModVol &m = modvols[i];
         if (m.count)
         {
+            // the volume's own cull mode, as Flycast: volumes may leave out the faces culling would drop
+            const u32 cull = wiiu_exp_mv_cull ? m.cull : 0;
+            GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, cull == 2, cull == 3);
             // GREATER passes where the volume surface is in front of the scene
             GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_GREATER, TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS,
                                       GX2_STENCIL_FUNCTION_INV, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP,
@@ -1183,6 +1206,7 @@ static void draw_modvols()
         }
         if (m.mode == 1 || m.mode == 2)
         {
+            GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
             // inside: where 0x01 is set; outside: where it is clear. The reference doubles as the value written
             stencil_pass(GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, 0x01, 0x02, m.mode == 1 ? 0x03 : 0x02);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, quad_base, 1);

@@ -55,6 +55,11 @@ u16 kcode[MAX_CONTROLLERS] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
 u32 vks[MAX_CONTROLLERS] = {0};
 s8 joyx[MAX_CONTROLLERS] = {0};
 s8 joyy[MAX_CONTROLLERS] = {0};
+#ifdef __WIIU__
+extern u16 wiiu_auto_mask[16], wiiu_auto_hold;
+extern int wiiu_auto_n, wiiu_auto_every, wiiu_auto_hold_rt;
+extern u32 wiiu_vblanks, wiiu_auto_hold_from;
+#endif
 u8 rt[MAX_CONTROLLERS] = {0};
 u8 lt[MAX_CONTROLLERS] = {0};
 
@@ -736,6 +741,17 @@ void UpdateInputState(u32 port)
     MapButtons(port, wiiButtons, gcButtons, nunchuckButtons, classicButtons);
     MapAnalogStick(port, stickX, stickY, expStickX, expStickY);
     MapTriggers(port, wiiButtons, gcButtons, nunchuckButtons, classicButtons);
+#ifdef __WIIU__
+    // test setting (wiiu.cfg auto_press, auto_hold): scripted buttons for Cemu runs, which have no controller
+    if (port == 0 && wiiu_auto_n && wiiu_vblanks % wiiu_auto_every < 6)
+        kcode[0] &= ~wiiu_auto_mask[wiiu_vblanks / wiiu_auto_every % wiiu_auto_n];
+    if (port == 0 && wiiu_auto_hold_from && wiiu_vblanks >= wiiu_auto_hold_from)
+    {
+        kcode[0] &= ~wiiu_auto_hold;
+        if (wiiu_auto_hold_rt)
+            rt[0] = 255;
+    }
+#endif
 
     // DDR Club Mix / 2nd Mix special layout: these games read the analog
     // stick pushed fully down as a "Select" input (used to change dancer/

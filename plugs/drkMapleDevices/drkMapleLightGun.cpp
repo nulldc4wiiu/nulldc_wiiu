@@ -37,7 +37,8 @@
 #include <stdlib.h>
 #include <wiiuse/wpad.h>
 #include "dc/dc.h"
-#include "wii/wii_exit.h"  // ordered shutdown for the exit combo (EXIT FIX preset)
+#include "wii/wii_exit.h"
+#include "plugs/libwiidrc/wiidrc.h"  // ordered shutdown for the exit combo (EXIT FIX preset)
 
 // Dreamcast controller button definitions (same as drkMapleDevices.cpp)
 #define key_CONT_C          (1 << 0)
@@ -89,6 +90,11 @@ extern "C"
 }
 
 extern "C" int get_player_count(void);
+#ifdef __WIIU__
+extern u16 wiiu_auto_mask[16];
+extern int wiiu_auto_n, wiiu_auto_every, wiiu_gun_aim_x, wiiu_gun_aim_y;
+extern u32 wiiu_vblanks;
+#endif
 
 /**
  * Scales a Wii IR coordinate to a Dreamcast screen coordinate.
@@ -172,14 +178,37 @@ void UpdateLightGunState(u32 port)
         kcode[port] &= ~key_CONT_A;
 
     // Off-screen reload trick — A button fires with gun_x/y set to off-screen
-    // Some games (HotD2) use an off-screen shot to reload.
+    // Some games (HotD2) use an off-screen shot to reload: the trigger, aimed off screen
     if (wiiButtons & WPAD_BUTTON_A)
     {
-        kcode[port] &= ~key_CONT_B;
+        kcode[port] &= ~key_CONT_A;
         // Force off-screen so the game treats it as a reload
         gun_x[port] = DC_OFFSCREEN;
         gun_y[port] = DC_OFFSCREEN;
     }
+
+#ifdef __WIIU__
+    // the GamePad works alongside the gun on player 1: Start (+) and the D-pad for menus, A/ZR as the trigger
+    if (port == 0 && WiiDRC_Inited())
+    {
+        WiiDRC_ScanPads();
+        const u32 drc = WiiDRC_ButtonsHeld();
+        if (drc & WIIDRC_BUTTON_PLUS)                     kcode[0] &= ~key_CONT_START;
+        if (drc & (WIIDRC_BUTTON_A | WIIDRC_BUTTON_ZR))   kcode[0] &= ~key_CONT_A;
+        if (drc & WIIDRC_BUTTON_UP)                       kcode[0] &= ~key_CONT_DPAD_UP;
+        if (drc & WIIDRC_BUTTON_DOWN)                     kcode[0] &= ~key_CONT_DPAD_DOWN;
+        if (drc & WIIDRC_BUTTON_LEFT)                     kcode[0] &= ~key_CONT_DPAD_LEFT;
+        if (drc & WIIDRC_BUTTON_RIGHT)                    kcode[0] &= ~key_CONT_DPAD_RIGHT;
+    }
+    // test settings (wiiu.cfg gun_aim=x,y and auto_press): a fixed aim and scripted buttons for Cemu runs
+    if (port == 0 && wiiu_gun_aim_x >= 0)
+    {
+        gun_x[0] = wiiu_gun_aim_x;
+        gun_y[0] = wiiu_gun_aim_y;
+    }
+    if (port == 0 && wiiu_auto_n && wiiu_vblanks % wiiu_auto_every < 6)
+        kcode[0] &= ~wiiu_auto_mask[wiiu_vblanks / wiiu_auto_every % wiiu_auto_n];
+#endif
 
     // Start / coin
     if (wiiButtons & WPAD_BUTTON_MINUS)
