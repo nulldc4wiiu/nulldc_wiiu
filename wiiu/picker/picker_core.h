@@ -64,6 +64,7 @@ enum {
     PICKER_BTN_UP = 1, PICKER_BTN_DOWN = 2, PICKER_BTN_ACCEPT = 4, PICKER_BTN_HELP = 8,
     PICKER_BTN_QUIT_COMBO = 16,   /* the UI's "leave" combination is held (nullDC: + and -) */
     PICKER_BTN_OPTIONS = 32,      /* opens and closes the options page */
+    PICKER_BTN_BACK = 64,         /* leaves the options page */
 };
 
 /* What picker_core_input reports. */

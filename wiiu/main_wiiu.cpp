@@ -64,8 +64,8 @@ void wiiu_gx2_shutdown();
 void wiiu_gx2_thumbnail();
 void wiiu_audio_init();
 bool wiiu_pick_game(const char *home, char *path, size_t size);
-void wiiu_picker_speed_options(const char *home, bool *cores, bool *jit_fast, bool *smooth, bool *code_check,
-                               int *sound_buffer_ms);
+void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
+                               bool *code_check, int *sound_buffer_ms);
 void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *render_width, bool *keep_pitch);
 void wiiu_gx2_set_render_width(int width);   // present_gx2.cpp
 extern float wiiu_audio_min_speed;          // audio_wiiu.cpp
@@ -211,7 +211,9 @@ static u32 probe_addr;
 static int fastmem = -1;   // wiiu.cfg fastmem=: 0 off, 1 on, 2 Cemu test mode; -1: the picker's option decides
 static bool controller_type_set;   // wiiu.cfg set g_controller_type: it wins over the picker's light gun option
 volatile bool wiiu_dump_request;
-int wiiu_ram_mem1;   // ram_mem1=1: Dreamcast RAM in MEM1 (_vmem.cpp; a test)
+int wiiu_ram_mem1;
+extern int g_aica_lag_test, g_aica_prio;   // aica.cpp
+extern u32 g_aica_ahead;   // ram_mem1=1: Dreamcast RAM in MEM1 (_vmem.cpp; a test)
 static int memlat;   // memlat=1: MEM1/MEM2 load latency at the bench start (sampler_wiiu.cpp)
 void wiiu_memlat();   // GamePad combo (ogc_compat.cpp)
 u16 wiiu_auto_mask[16], wiiu_auto_hold;
@@ -549,6 +551,12 @@ static void load_wiiu_cfg()
                     }
             }
         }
+        else if (!strcmp(key, "aica_ahead"))
+            g_aica_ahead = atoi(value);
+        else if (!strcmp(key, "aica_prio"))
+            g_aica_prio = atoi(value);
+        else if (!strcmp(key, "aica_lag_test"))
+            g_aica_lag_test = atoi(value);
         else if (!strcmp(key, "ram_mem1"))
             wiiu_ram_mem1 = atoi(value);
         else if (!strcmp(key, "memlat"))
@@ -735,19 +743,21 @@ int main(int argc, char **argv)
     // them off. The GX2 and sound threads go on a core the JIT isn't on: 0 on a console, 2 in Cemu, whose codegen core is 0
     // The options page can turn them off (config.txt, read here because the threads start before the picker runs).
     {
-        bool cores = true, jit_fast = true, smooth = true, code_check = true;
+        bool gfx_core = true, sound_core = true, jit_fast = true, smooth = true, code_check = true;
         int buffer = 100;
-        wiiu_picker_speed_options(home, &cores, &jit_fast, &smooth, &code_check, &buffer);
-        wiiu_exp_gx2_core = g_exp_aica_thread = !cores ? 0 : OSGetCodegenCore() == 0 ? 2 : 1;
-        wiiu_exp_split_convert = cores;
+        wiiu_picker_speed_options(home, &gfx_core, &sound_core, &jit_fast, &smooth, &code_check, &buffer);
+        const int other = OSGetCodegenCore() == 0 ? 2 : 1;   // 1: core 0, 2: core 2
+        wiiu_exp_gx2_core = gfx_core ? other : 0;
+        wiiu_exp_split_convert = gfx_core;
+        g_exp_aica_thread = sound_core ? other : 0;
         g_exp_fm_x = g_exp_ps_ftrv = g_exp_sq_fast = g_bcache_preset = jit_fast;
         g_jit_align_preset = jit_fast ? 0 : 1;
         wiiu_exp_frame_queue = smooth;
         g_jit_sbp_preset = code_check ? 3 : 1;   // 3: MvC2's module cache too
         audio_buffer_ms = buffer;
         audio_glide = 1;
-        printf("[wiiu] speed options: cores %d, faster code %d, smooth frames %d, code check %d, sound buffer %d\n",
-               cores, jit_fast, smooth, code_check, buffer ? buffer : 46);
+        printf("[wiiu] speed options: graphics core %d, sound core %d, faster code %d, smooth frames %d, code check %d, "
+               "sound buffer %d\n", gfx_core, sound_core, jit_fast, smooth, code_check, buffer ? buffer : 46);
     }
     load_wiiu_cfg();
     if (wiiu_exp_gx2_core)

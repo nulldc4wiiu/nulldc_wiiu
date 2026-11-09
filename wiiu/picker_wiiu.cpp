@@ -42,6 +42,8 @@ u32 read_buttons()
             b |= PICKER_BTN_HELP;
         if (vs.hold & VPAD_BUTTON_X)
             b |= PICKER_BTN_OPTIONS;
+        if (vs.hold & VPAD_BUTTON_B)
+            b |= PICKER_BTN_BACK;
         if ((vs.hold & (VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS)) == (VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS))
             b |= PICKER_BTN_QUIT_COMBO;
     }
@@ -65,6 +67,8 @@ u32 read_buttons()
             b |= PICKER_BTN_HELP;
         if ((p.core & 0x0001) || (classic && (p.exp & 0x0008)))
             b |= PICKER_BTN_OPTIONS;
+        if ((p.core & 0x0004) || (classic && (p.exp & 0x0040)))   // B: Wii Remote 0x0004, Classic/Pro 0x0040
+            b |= PICKER_BTN_BACK;
         if (((p.core & 0x1010) == 0x1010) || (classic && (p.exp & 0x1400) == 0x1400))
             b |= PICKER_BTN_QUIT_COMBO;
     }
@@ -166,7 +170,7 @@ void draw(u32 *px)
         u32 row = 6 + n;
         if (option_help(v.opt_sel))
             row += text_wrapped(px, MARGIN, row, option_help(v.opt_sel), FG);
-        text(px, MARGIN, row + 1, "A change   X back   (all games)", DIM);
+        text(px, MARGIN, row + 1, "A change   B back   (all games)", DIM);
     }
     else if (v.help)
     {
@@ -217,9 +221,12 @@ const picker_option options[] = {
       "When a game runs below full speed, its sound either slows down with it (smooth, lower pitch) or keeps "
       "its pitch (short gaps).", slow_sound, 2, 1 },
     // the console-tested speed settings (main_wiiu.cpp's defaults); wiiu.cfg still overrides any of them
-    { "cores", "Use all CPU cores",
-      "Graphics and sound mixing on their own cores, away from the emulated CPU: the biggest speedup (Soulcalibur "
-      "fights 97% to 140%). Next start.", on_off, 2, 0 },
+    { "gfx_core", "Graphics on own core",
+      "Graphics on a core of its own, away from the emulated CPU: the biggest speedup (Soulcalibur fights 97% to "
+      "131%). Next start.", on_off, 2, 0 },
+    { "sound_core", "Sound on own core",
+      "Sound mixing on a core of its own: about 12% faster. Turn it off if sounds or music go missing (the "
+      "Dreamcast chime, streamed music). Next start.", on_off, 2, 0 },
     { "jit_fast", "Faster CPU code",
       "Speedups in the emulated CPU's translated code (memory addressing, vector maths, block lookup, store "
       "queue). Turn it off if a game behaves oddly. Next start.", on_off, 2, 0 },
@@ -302,15 +309,16 @@ void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *r
 }
 
 // the speed settings, read at startup (before the threads exist), from the same config.txt
-void wiiu_picker_speed_options(const char *home, bool *cores, bool *jit_fast, bool *smooth, bool *code_check,
-                               int *sound_buffer_ms)
+void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
+                               bool *code_check, int *sound_buffer_ms)
 {
     setup(home);
-    *cores = picker_core_option(4) == 0;
-    *jit_fast = picker_core_option(5) == 0;
-    *smooth = picker_core_option(6) == 0;
-    *code_check = picker_core_option(7) == 0;
-    *sound_buffer_ms = picker_core_option(8) == 0 ? 100 : 0;
+    *gfx_core = picker_core_option(4) == 0;
+    *sound_core = picker_core_option(5) == 0;
+    *jit_fast = picker_core_option(6) == 0;
+    *smooth = picker_core_option(7) == 0;
+    *code_check = picker_core_option(8) == 0;
+    *sound_buffer_ms = picker_core_option(9) == 0 ? 100 : 0;
 }
 
 bool wiiu_pick_game(const char *home, char *path, size_t size)

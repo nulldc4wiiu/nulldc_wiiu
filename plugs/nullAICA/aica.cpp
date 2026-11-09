@@ -344,17 +344,22 @@ void AICA_Term()
 // ARM7 / SH4 interrupt lines. Driven once per sample from the SH4 timeslice
 // (armUpdateARM) — see [[aica-arm-timing]].
 #ifdef __WIIU__
-// exp_aica_thread (1: core 0, 2: core 2): mixing runs on another core, at most AICA_AHEAD samples behind. Timers and
+// exp_aica_thread (1: core 0, 2: core 2): mixing runs on another core, at most aica_ahead samples behind. Timers and
 // interrupts stay here. The mixer is the only thread that changes channel state: a channel register write stores its
 // value at once (reads must see it) and queues its processing, tagged with the sample it belongs to, so voices key on
-// and off at the same sample as without the thread. Reads of channel position lag by up to AICA_AHEAD samples.
+// and off at the same sample as without the thread. Reads of channel position lag by up to aica_ahead samples.
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 extern int g_exp_aica_thread;
 int g_exp_arm_thread;   // exp_arm_thread (needs exp_aica_thread): timers and the ARM7 run on the sound thread too
 void arm_SetEnabled(bool enabled);
 void aica_cdda_prefetch();
-static const u32 AICA_AHEAD = 512;
+// The mixer stays close behind the emulator: the game's sound driver reads channel state back (is a voice playing?),
+// and at the console's ~450-sample lag a voice it had just keyed on still looked idle (MvC2's voices and music went
+// silent). Above the GX2 thread's priority on the shared core, 128 samples apart, they play (console, 2026-11-08)
+u32 g_aica_ahead = 128;   // aica_ahead=N: how far the emulator may run ahead of the mixer, in samples
+int g_aica_prio = 15;     // aica_prio=N: the mixing thread's priority (the GX2 thread on the same core is 16)
+u32 g_aica_lag_max, g_aica_lag_sum, g_aica_lag_n;   // the mixer's lag behind the emulator, for the [audio] line
 static const u32 AICA_OPS = 8192;
 void aica_clear_looped_now(u32 chan);
 // reg 0xFFFF: clear the channel's loop flag; 0xFFFE: WriteAicaReg (chan the register, data, size in sz); 0xFFFD: ARM enable
@@ -363,6 +368,9 @@ static volatile u32 ops_w, ops_r;
 static volatile u32 aica_pending, aica_done;
 static volatile bool aica_stop, aica_started;
 static OSThread aica_thread;
+static u8 mixer_regs[0x2000] __attribute__((aligned(32)));   // the mixer's copy of the channel registers
+void aica_mixer_regs(u8 *base);       // sgc_if.cpp
+void aica_clear_live_kyonex(u32 chan);
 static void aica_apply_ops(u32 sample)
 {
     while (ops_r != ops_w)
@@ -385,7 +393,10 @@ static void aica_apply_ops(u32 sample)
         else if (op.reg == 0xFFFD)
             arm_SetEnabled(op.data != 0);
         else
+        {
+            *(u32 *)&mixer_regs[(op.chan * 0x80 + op.reg) & ~3u] = op.data;
             WriteChannelReg8(op.chan, op.reg);
+        }
         ops_r = ops_r + 1;
     }
 }
@@ -433,9 +444,19 @@ void aica_poll_ints()
 void aica_channel_write(u32 chan, u32 reg)
 {
     if (aica_started && !aica_on_sound_thread())
-        aica_queue(chan, reg);
+    {
+        // the register's word as it is now goes with the op (the mixer applies it to its copy in order); whole words,
+        // because the block isn't stored byte for byte on this big-endian host
+        aica_queue(chan, reg, *(const u32 *)&aica_reg[(chan * 0x80 + reg) & ~3u]);
+        if (reg == 1)
+            aica_clear_live_kyonex(chan);
+    }
     else
+    {
+        if (aica_started)
+            *(u32 *)&mixer_regs[(chan * 0x80 + reg) & ~3u] = *(const u32 *)&aica_reg[(chan * 0x80 + reg) & ~3u];
         WriteChannelReg8(chan, reg);
+    }
 }
 void aica_clear_looped(u32 chan)
 {
@@ -446,11 +467,12 @@ void aica_clear_looped(u32 chan)
 }
 void arm_run_samples(u32 samples);   // arm_aica.cpp
 static u32 arm_due;
+int g_aica_lag_test;   // aica_lag_test=N: the mixer keeps N samples behind (a console's lag, reproduced in Cemu)
 static int aica_main(int, const char **)
 {
     while (!aica_stop)
     {
-        while (aica_done != aica_pending)
+        while (aica_done != aica_pending && (u32)(aica_pending - aica_done) > (u32)g_aica_lag_test)
         {
             aica_apply_ops(aica_done);
             AICA_Sample();
@@ -478,9 +500,11 @@ static void aica_thread_step()
     if (!aica_started)
     {
         static u8 stack[64 * 1024] __attribute__((aligned(16)));
+        memcpy(mixer_regs, aica_reg, sizeof(mixer_regs));
+        aica_mixer_regs(mixer_regs);
         aica_started = true;
         // below the GX2 thread: CafeOS doesn't time-slice, and with the ARM7 this thread can stay busy
-        OSCreateThread(&aica_thread, aica_main, 0, nullptr, stack + sizeof(stack), sizeof(stack), 18,
+        OSCreateThread(&aica_thread, aica_main, 0, nullptr, stack + sizeof(stack), sizeof(stack), g_aica_prio,
                        g_exp_aica_thread == 2 ? OS_THREAD_ATTRIB_AFFINITY_CPU2 : OS_THREAD_ATTRIB_AFFINITY_CPU0);
         OSSetThreadName(&aica_thread, "nullDC AICA");
         OSResumeThread(&aica_thread);
@@ -488,7 +512,12 @@ static void aica_thread_step()
     }
     if (aica_pending % 588 == 0)
         aica_cdda_prefetch();
-    while (aica_pending - aica_done >= AICA_AHEAD)
+    const u32 lag = aica_pending - aica_done;
+    g_aica_lag_sum += lag;
+    g_aica_lag_n++;
+    if (lag > g_aica_lag_max)
+        g_aica_lag_max = lag;
+    while (aica_pending - aica_done >= g_aica_ahead)
         OSSleepTicks(OSMicrosecondsToTicks(100));
     aica_pending = aica_pending + 1;
 }

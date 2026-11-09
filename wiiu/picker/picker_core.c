@@ -297,7 +297,7 @@ int picker_core_input(unsigned b, unsigned ms)
 
     if (g_view.options) {
         const int n = g_cfg->n_options < MAX_OPTIONS ? g_cfg->n_options : MAX_OPTIONS;
-        if (pressed & (PICKER_BTN_OPTIONS | PICKER_BTN_HELP))
+        if (pressed & (PICKER_BTN_BACK | PICKER_BTN_OPTIONS | PICKER_BTN_HELP))
             g_view.options = 0;
         else if (n && (pressed & PICKER_BTN_UP))
             g_view.opt_sel = (g_view.opt_sel + n - 1) % n;

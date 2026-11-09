@@ -1154,6 +1154,16 @@ void WriteChannelReg8(u32 channel, u32 reg)
 #ifdef __WIIU__
 void aica_clear_looped(u32 chan);   // aica.cpp: now, or queued for the mixer
 void aica_clear_looped_now(u32 chan) { Chans[chan].loop.looped = 0; }
+// exp_aica_thread: the mixer reads its own copy of the channel registers, updated in queue order, never the live
+// block: applied up to 512 samples late, a write read the live registers' later values (KYONB changed since the
+// key-on), which silenced the console's streamed sounds (BIOS chime, HotD2 music); Cemu's mixer kept up
+void aica_mixer_regs(u8 *base)
+{
+    for (int i = 0; i < 64; i++)
+        Chans[i].ccd = (ChannelCommonData *)&base[i * 0x80];
+}
+// the live block's KYONEX reads back as 0 once written, as the mixer's copy is cleared when it acts on it
+void aica_clear_live_kyonex(u32 chan) { ((ChannelCommonData *)&aica_reg[chan * 0x80])->KYONEX = 0; }
 #endif
 void ReadCommonReg(u32 reg, bool byte)
 {
