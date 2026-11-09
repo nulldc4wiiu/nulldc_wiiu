@@ -314,7 +314,14 @@ static float canvas_w = 640.0f, canvas_h = 480.0f;   // of the screen frame bein
 static bool scene_dirty;
 int wiiu_exp_trans_min = 1;
 int wiiu_exp_screen_pos;   // exp_screen_pos=1: screen positions with W = 1 and per-pixel division, as Flycast (passes the TA tests; no gain seen yet)
-static u32 u_screen_vs_loc = ~0u, u_screen_ps_loc = ~0u;   // geo shaders' screen-mode switch (exp_screen_pos)
+static u32 u_screen_vs_loc = ~0u, u_screen_ps_loc = ~0u;
+// exp_gpu_convert (needs exp_screen_pos): vertices go to the GPU as decoded (WiiuVertex, 28 bytes) and the vertex
+// shader scales them, so the intake core copies instead of converting each one
+int wiiu_exp_gpu_convert;
+static WHBGfxShaderGroup geo_raw;   // the same shaders, fetching the decoded layout
+static float draw_screen[4];        // the committed scene's u_screen
+static inline bool raw_vertices() { return wiiu_exp_gpu_convert && wiiu_exp_screen_pos; }
+static inline u32 vertex_bytes() { return raw_vertices() ? sizeof(WiiuVertex) : sizeof(GpuVertex); }   // geo shaders' screen-mode switch (exp_screen_pos)
 static u32 u_mode_loc, u_shade_loc, u_fog_col_loc, u_fog_vcol_loc, u_clamp_min_loc, u_clamp_max_loc, u_clamp_on_loc, tex0_loc,
     fog_table_loc;
 
@@ -335,6 +342,7 @@ struct Scene
     u32 strip_idx[WIIU_MAX_STRIPS], strip_count, idx_owner, idx_count;
     WiiuModVol modvols[WIIU_MAX_MV_PARAMS];
     u32 modvol_count, mv_base, quad_base, shad_scale;
+    float screen[4];   // the geo shaders' u_screen for this scene
     u32 trans_order[WIIU_MAX_STRIPS], trans_count;
     u16 fog_table[128];
     u32 fog_col_ram, fog_col_vert, fog_clamp_min, fog_clamp_max;
@@ -509,6 +517,16 @@ bool wiiu_gx2_init()
     WHBGfxInitShaderAttribute(&geo, "a_spc", 0, 20, GX2_ATTRIB_FORMAT_UNORM_8_8_8_8);
     WHBGfxInitShaderAttribute(&geo, "a_uv", 0, 24, GX2_ATTRIB_FORMAT_FLOAT_32_32);
     WHBGfxInitFetchShader(&geo);
+    if (WHBGfxLoadGFDShaderGroup(&geo_raw, 0, geo_gsh))
+    {
+        WHBGfxInitShaderAttribute(&geo_raw, "a_pos", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32);
+        WHBGfxInitShaderAttribute(&geo_raw, "a_col", 0, 12, GX2_ATTRIB_FORMAT_UNORM_8_8_8_8);
+        WHBGfxInitShaderAttribute(&geo_raw, "a_spc", 0, 16, GX2_ATTRIB_FORMAT_UNORM_8_8_8_8);
+        WHBGfxInitShaderAttribute(&geo_raw, "a_uv", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+        WHBGfxInitFetchShader(&geo_raw);
+    }
+    else
+        wiiu_exp_gpu_convert = 0;
     for (u32 i = 0; i < geo.pixelShader->uniformVarCount; i++)
     {
         const GX2UniformVar &u = geo.pixelShader->uniformVars[i];
@@ -725,16 +743,32 @@ static void sort_opaque(WiiuFrame *f)
 }
 
 static OSTime intake_ticks[3];   // where the intake core goes: TA decode, convert, texture lookup
+static OSTime sort_opaque_ticks;
+extern int wiiu_exp_fix_inf;
+extern OSTime wiiu_decode_ticks[3];   // render_gx2.cpp
+extern u32 wiiu_decode_blocks;
 static u32 intake_frames;
 static void build_scene(const WiiuFrame *f, GpuVertex *out, u32 *idx, float w, float h, Scene *sc)
 {
     sc->seq = ++scene_counter;
     wiiu_textures_begin(sc->seq);
     const OSTime s0 = OSGetSystemTime();
+    // exp_single_pass: decode streams each strip into this scene's buffers (raw vertices only; the opaque sort
+    // reorders strips and the inf fix rewrites vertices after decode, so either turns it off)
+    extern int wiiu_exp_single_pass;
+    extern WiiuVertex *wiiu_stream_v;
+    extern u32 *wiiu_stream_i;
+    const bool stream = wiiu_exp_single_pass && raw_vertices() && !wiiu_exp_sort_opaque && !wiiu_exp_fix_inf;
+    wiiu_stream_v = stream ? (WiiuVertex *)out : nullptr;
+    wiiu_stream_i = stream ? idx : nullptr;
     wiiu_ta_decode((WiiuFrame *)f);
+    wiiu_stream_v = nullptr;
+    wiiu_stream_i = nullptr;
+    const OSTime s0b = OSGetSystemTime();
     if (wiiu_exp_sort_opaque)
         sort_opaque((WiiuFrame *)f);
     const OSTime s1 = OSGetSystemTime();
+    sort_opaque_ticks += s1 - s0b;
     convert_frame(f, out, idx, w, h, sc);
     const OSTime s2 = OSGetSystemTime();
     sc->n_tex = sc->n_inv = 0;
@@ -816,7 +850,7 @@ static int intake_main(int, const char **)
             OSFastMutex_Unlock(&decode_lock);
             sc->frame_seq = seq;
             // flushed by this core (the GX2 thread's flush may not reach lines still in this core's cache)
-            DCFlushRange(slot_v[s], (sc->quad_base + 4) * sizeof(GpuVertex));
+            DCFlushRange(slot_v[s], (sc->quad_base + 4) * vertex_bytes());
             DCFlushRange(slot_i[s], sc->idx_count * sizeof(u32));
             static u32 built;
             if (++built % 300 == 0 || built == 30)
@@ -894,7 +928,7 @@ static void adopt_scene()
     if (r < 0)
         return;
     const Scene &sc = scenes[r];
-    GX2Invalidate(GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, slot_v[r], (sc.quad_base + 4) * sizeof(GpuVertex));
+    GX2Invalidate(GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, slot_v[r], (sc.quad_base + 4) * vertex_bytes());
     GX2Invalidate(GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, slot_i[r], sc.idx_count * sizeof(u32));
     for (u32 i = 0; i < sc.n_inv; i++)
         GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, sc.inv[i].image, sc.inv[i].bytes);
@@ -1028,28 +1062,57 @@ static void fix_inf_vertices(WiiuFrame *f)
         }
     }
 }
+// inside convert_frame: infinite-vertex fixes, this core's vertex half, waiting for the helper's half, modifier volumes
+// and copies, the index lists, the translucent sort; and the vertices, strips and indices it handled
+static OSTime conv_ticks[6];
+static u32 conv_vertices, conv_strips, conv_indices;
 static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float width, float height, Scene *sc)
 {
     const float hw = width * 0.5f, hh = height * 0.5f;
     const float scale = f->max_invw > 0.0f ? 1.0f / f->max_invw : 1.0f;
-    fix_inf_vertices((WiiuFrame *)f);
+    OSTime c0 = OSGetSystemTime(), c1;
+    const auto lap = [&](int k) { c1 = OSGetSystemTime(); conv_ticks[k] += c1 - c0; c0 = c1; };
+    conv_vertices += f->nv;
+    conv_strips += f->ns;
+    if (wiiu_exp_fix_inf)   // off: not even a counting pass over every vertex (3.5 ms a DOA2 frame on a console)
+        fix_inf_vertices((WiiuFrame *)f);
+    lap(0);
     // exp_split_convert: this is the intake core's biggest stage (7 of 13.8 ms in a Soulcalibur fight, console), and each
     // vertex stands alone, so the helper core takes the second half
+    const bool raw = raw_vertices();
+    sc->screen[0] = raw ? (wiiu_exp_halfz ? 3.0f : 2.0f) : wiiu_exp_screen_pos ? 1.0f : 0.0f;
+    sc->screen[1] = 1.0f / hw;
+    sc->screen[2] = 1.0f / hh;
+    sc->screen[3] = scale;
+    WiiuVertex *rout = (WiiuVertex *)out;
+    // exp_single_pass: decode already put these strips' vertices and indices in out and idx
+    const bool streamed = raw && f->streamed_v == out && f->streamed_i == idx;
+    const u32 vdone = streamed ? f->streamed_nv : 0, sdone = streamed ? f->streamed_ns : 0;
     u32 first_half = f->nv;
-    if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
+    if (raw)
+        memcpy(rout + vdone, f->v + vdone, (f->nv - vdone) * sizeof(WiiuVertex));
+    else if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
     {
         first_half = f->nv / 2 & ~31u;
         conv_job = { f, out, first_half, f->nv, hw, hh, scale };
         OSSignalEvent(&conv_go);
     }
-    convert_vertices(f, out, 0, first_half, hw, hh, scale);
+    if (!raw)
+        convert_vertices(f, out, 0, first_half, hw, hh, scale);
+    lap(1);
     if (first_half != f->nv)
         OSWaitEvent(&conv_done);
+    lap(2);
     // modifier volume triangles, then the full-screen quad, after the polygon vertices
     sc->mv_base = f->nv;
     for (u32 i = 0; i < f->n_mv_tris * 3; i++)
     {
         const WiiuMvVertex &v = f->mv[i];
+        if (raw)
+        {
+            rout[sc->mv_base + i] = { v.x, v.y, v.z, 0, 0, 0.0f, 0.0f };
+            continue;
+        }
         float invw = v.z > 1e-7f ? v.z : 1e-7f;
         float w = 1.0f / invw;
         float d = invw * scale;
@@ -1077,7 +1140,9 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     // shading inside volumes multiplies by the intensity: black drawn over with alpha 1 - intensity
     sc->shad_scale = f->fpu_shad_scale;
     static const float corners[4][2] = { { -1, 1 }, { -1, -1 }, { 1, 1 }, { 1, -1 } };
-    for (u32 i = 0; i < 4; i++)
+    for (u32 i = 0; i < 4 && raw; i++)
+        rout[sc->quad_base + i] = { (corners[i][0] + 1.0f) * hw, (1.0f - corners[i][1]) * hh, 0.0f, 255u - (sc->shad_scale & 0xFF), 0, 0.0f, 0.0f };
+    for (u32 i = 0; i < 4 && !raw; i++)
         out[sc->quad_base + i] = { corners[i][0], corners[i][1], wiiu_exp_halfz ? 0.0f : -1.0f, 1.0f, 255u - (sc->shad_scale & 0xFF), 0, 0.0f, 0.0f };
     sc->modvol_count = f->n_mp;
     memcpy(sc->modvols, f->mp, f->n_mp * sizeof(WiiuModVol));
@@ -1085,9 +1150,15 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     memcpy(sc->strips, f->s, f->ns * sizeof(WiiuStrip));
     // every other triangle of a strip has its first two vertices swapped, as the GPU does, so the winding (and
     // the culling) stays what the strip had
+    lap(3);
     u32 ni = 0;
     sc->idx_owner = (u32)(uintptr_t)idx;
-    for (u32 i = 0; i < f->ns; i++)
+    for (u32 i = 0; i < sdone; i++)
+    {
+        sc->strip_idx[i] = ni;
+        ni += (f->s[i].count - 2) * 3;
+    }
+    for (u32 i = sdone; i < f->ns; i++)
     {
         const u32 first = f->s[i].first, tris = f->s[i].count - 2;
         sc->strip_idx[i] = ni;
@@ -1100,6 +1171,8 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         }
     }
     sc->idx_count = ni;
+    conv_indices += ni;
+    lap(4);
     // the PVR sorts translucent polygons by depth itself unless pre-sort mode is on; approximate that per strip,
     // smallest (farthest) first, keeping submission order for ties. The key is the strip's smallest 1/w, its
     // farthest point, as Flycast keys each triangle: a mean let MvC2's cloud layer, which runs from the horizon to
@@ -1110,6 +1183,12 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         const WiiuStrip &st = f->s[i];
         if (st.list != 2)
             continue;
+        if (i < sdone)
+        {
+            trans_key[i] = st.zkey;
+            sc->trans_order[sc->trans_count++] = i;
+            continue;
+        }
         float sum = 0.0f, lo = 1e30f;
         for (u32 k = 0; k < st.count; k++)
         {
@@ -1122,6 +1201,7 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     }
     if (!(f->isp_feed_cfg & 1))
         std::stable_sort(sc->trans_order, sc->trans_order + sc->trans_count, [](u32 a, u32 b) { return trans_key[a] < trans_key[b]; });
+    lap(5);
     memcpy(sc->fog_table, f->fog_table, sizeof(sc->fog_table));
     sc->fog_col_ram = f->fog_col_ram;
     sc->fog_col_vert = f->fog_col_vert;
@@ -1136,6 +1216,7 @@ static void commit(const Scene *sc)
     if (committed == sc)
         return;
     committed = sc;
+    memcpy(draw_screen, sc->screen, sizeof(draw_screen));
     memcpy(strips, sc->strips, sc->strip_count * sizeof(WiiuStrip));
     memcpy(strip_idx, sc->strip_idx, sc->strip_count * sizeof(u32));
     memcpy(draw_strip_tex, sc->strip_tex, sc->strip_count * sizeof(u16));
@@ -1291,17 +1372,15 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
     if (wiiu_exp_halfz)
         GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
     GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
-    GX2SetFetchShader(&geo.fetchShader);
+    const bool raw = draw_screen[0] > 1.5f;
+    GX2SetFetchShader(raw ? &geo_raw.fetchShader : &geo.fetchShader);
     GX2SetVertexShader(geo.vertexShader);
     GX2SetPixelShader(geo.pixelShader);
-    {
-        const float on[4] = { wiiu_exp_screen_pos ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
-        if (u_screen_vs_loc != ~0u)
-            GX2SetVertexUniformReg(u_screen_vs_loc, 4, (u32 *)on);
-        if (u_screen_ps_loc != ~0u)
-            GX2SetPixelUniformReg(u_screen_ps_loc, 4, (u32 *)on);
-    }
-    GX2RSetAttributeBuffer(vbuf, 0, sizeof(GpuVertex), 0);
+    if (u_screen_vs_loc != ~0u)
+        GX2SetVertexUniformReg(u_screen_vs_loc, 4, (u32 *)draw_screen);
+    if (u_screen_ps_loc != ~0u)
+        GX2SetPixelUniformReg(u_screen_ps_loc, 4, (u32 *)draw_screen);
+    GX2RSetAttributeBuffer(vbuf, 0, raw ? sizeof(WiiuVertex) : sizeof(GpuVertex), 0);
     GX2SetPixelTexture(&tex, tex0_loc);
     GX2SetPixelSampler(&sampler, tex0_loc);
     GX2SetPixelTexture(&fog_tex, fog_table_loc);
@@ -1751,6 +1830,18 @@ static void perf_report()
         printf("[gx2] intake per frame: TA decode %.2f ms, convert %.2f ms, textures %.2f ms, %u frames\n",
                OSTicksToMicroseconds(intake_ticks[0]) * ms, OSTicksToMicroseconds(intake_ticks[1]) * ms,
                OSTicksToMicroseconds(intake_ticks[2]) * ms, intake_frames);
+        const auto us = [&](OSTime t) { return OSTicksToMicroseconds(t) * ms; };
+        printf("[gx2] intake detail per frame: decode = TA loop %.2f + depth pass %.2f + rest %.2f + opaque sort %.2f ms; "
+               "convert = inf fix %.2f + vertices %.2f + helper wait %.2f + volumes/copies %.2f + indices %.2f + "
+               "translucent sort %.2f ms; %u blocks, %u vertices, %u strips, %u indices\n",
+               us(wiiu_decode_ticks[0]), us(wiiu_decode_ticks[1]), us(wiiu_decode_ticks[2]), us(sort_opaque_ticks),
+               us(conv_ticks[0]), us(conv_ticks[1]), us(conv_ticks[2]), us(conv_ticks[3]), us(conv_ticks[4]),
+               us(conv_ticks[5]), wiiu_decode_blocks / intake_frames, conv_vertices / intake_frames,
+               conv_strips / intake_frames, conv_indices / intake_frames);
+        memset(wiiu_decode_ticks, 0, sizeof(wiiu_decode_ticks));
+        memset(conv_ticks, 0, sizeof(conv_ticks));
+        sort_opaque_ticks = 0;
+        wiiu_decode_blocks = conv_vertices = conv_strips = conv_indices = 0;
         intake_ticks[0] = intake_ticks[1] = intake_ticks[2] = 0;
         intake_frames = 0;
     }

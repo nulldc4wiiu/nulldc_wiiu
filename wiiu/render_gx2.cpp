@@ -55,6 +55,57 @@ static inline u32 from_float(float a, float r, float g, float b) { return rgba_b
 // 16-bit UVs are the top half of a float
 static inline float uv16(u16 v) { union { u32 u; float f; } x = { (u32)v << 16 }; return x.f; }
 
+// exp_single_pass (with raw vertices): where decode streams each closed strip (build_scene sets these)
+int wiiu_exp_single_pass;
+WiiuVertex *wiiu_stream_v;
+u32 *wiiu_stream_i;
+extern int wiiu_exp_trans_min;   // present_gx2.cpp
+// copy whole vertices to the GPU buffer; destination cache lines wholly inside are zeroed first (dcbz) so they're
+// never read from memory just to be overwritten
+static inline void stream_copy(void *dst, const void *src, u32 bytes)
+{
+    u8 *d = (u8 *)dst;
+    u8 *line = (u8 *)(((uintptr_t)d + 31) & ~31u), *end = (u8 *)(((uintptr_t)d + bytes) & ~31u);
+    for (; line < end; line += 32)
+        asm volatile("dcbz 0,%0" : : "r"(line) : "memory");
+    memcpy(d, src, bytes);
+}
+static void stream_strip(WiiuStrip &st)
+{
+    // the strip's vertices are still in this core's cache: depth range, sort key, GPU copy and indices in one go
+    const WiiuVertex *v = &dec->v[st.first];
+    float hi = 0.0f, lo = 1e30f, sum = 0.0f;
+    for (u32 k = 0; k < st.count; k++)
+    {
+        const float z = v[k].z;
+        if (z > hi && z < 1e30f)
+            hi = z;
+        lo = z < lo ? z : lo;
+        sum += z;
+    }
+    if (hi > dec->max_drawn)
+        dec->max_drawn = hi;
+    st.zkey = wiiu_exp_trans_min ? lo : sum / st.count;
+    // vertices of dropped short strips between strips are copied too, so the copy stays one contiguous run
+    const u32 from = dec->streamed_nv, to = st.first + st.count;
+    if (to > from)
+        stream_copy(&wiiu_stream_v[from], &dec->v[from], (to - from) * sizeof(WiiuVertex));
+    dec->streamed_nv = to;
+    const u32 tris = st.count - 2;
+    u32 *idx = &wiiu_stream_i[dec->streamed_ni];
+    u8 *line = (u8 *)(((uintptr_t)idx + 31) & ~31u), *end = (u8 *)(((uintptr_t)(idx + tris * 3)) & ~31u);
+    for (; line < end; line += 32)
+        asm volatile("dcbz 0,%0" : : "r"(line) : "memory");
+    for (u32 k = 0; k < tris; k++)
+    {
+        idx[k * 3] = st.first + k + (k & 1);
+        idx[k * 3 + 1] = st.first + k + 1 - (k & 1);
+        idx[k * 3 + 2] = st.first + k + 2;
+    }
+    dec->streamed_ni += tris * 3;
+    dec->streamed_ns++;
+}
+
 struct FrameDecoder
 {
     static u32 list;
@@ -113,7 +164,11 @@ struct FrameDecoder
     {
         cur.count = dec->nv - cur.first;
         if (cur.count >= 3 && dec->ns < WIIU_MAX_STRIPS)
+        {
             dec->s[dec->ns++] = cur;
+            if (wiiu_stream_v)
+                stream_strip(dec->s[dec->ns - 1]);
+        }
         else if (cur.count >= 3)
             wiiu_dropped_strips++;
     }
@@ -287,6 +342,8 @@ struct FrameDecoder
         }
         cur.count = 4;
         dec->s[dec->ns++] = cur;
+        if (wiiu_stream_v)
+            stream_strip(dec->s[dec->ns - 1]);
     }
 };
 
@@ -874,13 +931,21 @@ float wiiu_depth_cap;   // depth_cap=X (test): the depth scale's largest 1/W at 
 int wiiu_depth_stats;   // depth_stats=1: log the 1/w spread every 60 renders (test setting)
 int wiiu_exp_depth_drawn = 1;   // exp_depth_drawn=0: the depth scale from every vertex and volume, as before
 int wiiu_dump_render;   // dump_render=N: log the decoded frame at render N
+OSTime wiiu_decode_ticks[3];   // inside TA decode: the TA command loop, the depth-scale pass, the rest
+u32 wiiu_decode_blocks;
 void wiiu_ta_decode(WiiuFrame *f)
 {
     if (f->decoded)
         return;
+    const OSTime d0 = OSGetSystemTime();
+    wiiu_decode_blocks += f->n_ta;
     dec = f;
     f->nv = f->ns = f->n_mv_tris = f->n_mp = 0;
     f->max_invw = 0.0f;
+    f->streamed_v = wiiu_stream_v;
+    f->streamed_i = wiiu_stream_i;
+    f->streamed_nv = f->streamed_ns = f->streamed_ni = 0;
+    f->max_drawn = 0.0f;
     TileAccel.ListInit();   // TaCmd back to the start
     u32 ev = 0;
     for (u32 i = 0; i <= f->n_ta; )
@@ -903,6 +968,8 @@ void wiiu_ta_decode(WiiuFrame *f)
         while (p <= last);
         i = end;
     }
+    const OSTime d1 = OSGetSystemTime();
+    wiiu_decode_ticks[0] += d1 - d0;
     if (wiiu_depth_stats && wiiu_renders % 60 == 0)
     {
         // depth_stats: how far the largest 1/w sits above the bulk (log10 buckets, strips' vertices)
@@ -921,8 +988,8 @@ void wiiu_ta_decode(WiiuFrame *f)
     // clip-space conversion rounds them together and near surfaces flicker through each other
     if (wiiu_exp_depth_drawn)
     {
-        float m = 0.0f;
-        for (u32 i = 0; i < f->ns; i++)
+        float m = f->max_drawn;   // streamed: taken strip by strip
+        for (u32 i = f->streamed_ns; i < f->ns; i++)
             if (f->s[i].count >= 3)
                 for (u32 k = f->s[i].first; k < f->s[i].first + f->s[i].count && k < f->nv; k++)
                     if (f->v[k].z > m && f->v[k].z < 1e30f)
@@ -942,6 +1009,8 @@ void wiiu_ta_decode(WiiuFrame *f)
         if (wiiu_depth_cap > 0.0f && f->max_invw > wiiu_depth_cap)
             f->max_invw = wiiu_depth_cap;   // test: depth precision for the bulk, nearer vertices clamp
     }
+    const OSTime d2 = OSGetSystemTime();
+    wiiu_decode_ticks[1] += d2 - d1;
     if (f->has_bg && f->nv + 4 <= WIIU_MAX_VERTICES && f->ns < WIIU_MAX_STRIPS)
     {
         // drawn without depth; mid-range so it can't be clipped against either depth plane
@@ -1040,6 +1109,7 @@ void wiiu_ta_decode(WiiuFrame *f)
                    st.first, st.count, st.list, f->nv);
         }
     }
+    wiiu_decode_ticks[2] += OSGetSystemTime() - d2;
     f->decoded = true;
     dec = nullptr;
 }

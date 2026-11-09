@@ -34,6 +34,7 @@ struct WiiuStrip
     // user tile clip: mode (2 draw inside, 3 outside, else off) in bits 31..24, then the rectangle in 32-pixel
     // tiles, inclusive: x min 23..18, y min 17..12, x max 11..6, y max 5..0
     u32 clip;
+    float zkey;   // translucent sort key (exp_single_pass sets it at decode; convert_frame otherwise)
 };
 
 // one modifier volume header from the opaque modifier list and the triangles after it, [first, first + count)
@@ -77,6 +78,12 @@ struct WiiuFrame
     struct { u32 at, what; } ta_ev[WIIU_MAX_TA_EVENTS];
     u32 n_ta_ev;
     bool decoded;
+    // exp_single_pass: decode copied each strip's vertices and indices into these GPU buffers as it closed the
+    // strip (streamed_nv vertices, streamed_ns strips, streamed_ni indices) and took the drawn depth range
+    void *streamed_v;
+    u32 *streamed_i;
+    u32 streamed_nv, streamed_ns, streamed_ni;
+    float max_drawn;
     // the background plane (ISP_BACKGND_T), read at StartRender and added after the decoded geometry
     WiiuVertex bg_v[4];
     WiiuStrip bg_s;
