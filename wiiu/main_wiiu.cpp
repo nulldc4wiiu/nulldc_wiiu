@@ -185,7 +185,7 @@ extern "C" int g_frame_prof_preset;   // plugs/drkPvr/frame_prof.cpp
 u64 g_wiiu_prof[10];   // wiiu/prof_wiiu.h
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast, g_exp_aica_thread;
-extern int wiiu_depth_stats, wiiu_exp_depth_drawn, wiiu_exp_mv_cull, wiiu_exp_canvas_regs, wiiu_exp_split_convert, g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
+extern int wiiu_exp_pcw_gouraud, wiiu_depth_stats, wiiu_exp_depth_drawn, wiiu_exp_mv_cull, wiiu_exp_canvas_regs, wiiu_exp_split_convert, g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern u32 wiiu_bad_vertices;
 #ifdef WIIU_INSTRUMENT
 extern int wiiu_sampler_mode, wiiu_sampler_how, g_prof_links;
@@ -212,6 +212,7 @@ static int fastmem = -1;   // wiiu.cfg fastmem=: 0 off, 1 on, 2 Cemu test mode; 
 static bool controller_type_set;   // wiiu.cfg set g_controller_type: it wins over the picker's light gun option
 volatile bool wiiu_dump_request;
 int wiiu_ram_mem1;
+int wiiu_picker_quit_test;
 extern int g_aica_lag_test, g_aica_prio;   // aica.cpp
 extern u32 g_aica_ahead;   // ram_mem1=1: Dreamcast RAM in MEM1 (_vmem.cpp; a test)
 static int memlat;   // memlat=1: MEM1/MEM2 load latency at the bench start (sampler_wiiu.cpp)
@@ -551,6 +552,8 @@ static void load_wiiu_cfg()
                     }
             }
         }
+        else if (!strcmp(key, "picker_quit_test"))
+            wiiu_picker_quit_test = atoi(value);
         else if (!strcmp(key, "aica_ahead"))
             g_aica_ahead = atoi(value);
         else if (!strcmp(key, "aica_prio"))
@@ -565,6 +568,8 @@ static void load_wiiu_cfg()
             wiiu_depth_stats = atoi(value);
         else if (!strcmp(key, "exp_depth_drawn"))
             wiiu_exp_depth_drawn = atoi(value);
+        else if (!strcmp(key, "exp_pcw_gouraud"))
+            wiiu_exp_pcw_gouraud = atoi(value);
         else if (!strcmp(key, "exp_mv_cull"))
             wiiu_exp_mv_cull = atoi(value);
         else if (!strcmp(key, "gun_aim"))
@@ -798,7 +803,15 @@ static int app_main()
         wiiu_kpad_init();
         if (!wiiu_pick_game(home, selectedFilePath, sizeof(selectedFilePath)))
         {
-            wiiu_gx2_shutdown();   // HOME pressed in the picker
+            // quit from the picker (+ and -) or HOME, Close: ask for the Wii U Menu if nobody has yet, then keep serving
+            // ProcUI (the HOME and release handling need GX2 up) until it says exit. Shutting GX2 down at once, with
+            // nothing asking for the menu, left the app frozen and HOME dead (console, 2026-11-08)
+            printf("[wiiu] exit: left the picker, asking for the Wii U Menu\n");
+            if (wiiu_app_running())
+                request_exit();
+            while (wiiu_app_running())
+                OSSleepTicks(OSMillisecondsToTicks(10));
+            wiiu_gx2_shutdown();
             app_done = true;
             if (!wiiu_exp_gx2_core)
                 WHBProcShutdown();

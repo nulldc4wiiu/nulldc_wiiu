@@ -348,7 +348,8 @@ bool wiiu_pick_game(const char *home, char *path, size_t size)
     while (wiiu_app_running())
     {
         const int ev = picker_core_input(read_buttons(), (unsigned)OSTicksToMilliseconds(OSGetSystemTime()));
-        if (ev == PICKER_QUIT)
+        extern int wiiu_picker_quit_test;   // main_wiiu.cpp: picker_quit_test=N quits after N frames (Cemu has no + and -)
+        if (ev == PICKER_QUIT || (wiiu_picker_quit_test && --wiiu_picker_quit_test == 0))
             break;
         if (ev == PICKER_CHOSE)
         {

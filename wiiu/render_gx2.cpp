@@ -967,6 +967,7 @@ void wiiu_ta_decode(WiiuFrame *f)
             st.count = 4;
             st.list = 2;
             st.isp = 7u << 29 | 1u << 26 | 1u << 23;   // depth always, no depth write, Gouraud
+            st.pcw = 1u << 1;                            // Gouraud, where the renderer reads it
             st.tsp = 1u << 29 | 2u << 22;               // source one, destination zero, no fog
             const float xy[4][2] = { { b[0], b[1] }, { b[2], b[1] }, { b[0], b[3] }, { b[2], b[3] } };
             for (const auto &c : xy)

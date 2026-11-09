@@ -953,6 +953,7 @@ static void start_conv_helper()
         conv_helper_up = true;
     }
 }
+int wiiu_exp_pcw_gouraud = 1;   // exp_pcw_gouraud=0: Gouraud from the ISP word, as before
 int wiiu_exp_mv_cull;   // exp_mv_cull=1: volume triangles culled by their ISP cull mode (Flycast); unproven, off
 int wiiu_exp_fix_inf;
 u32 wiiu_bad_vertices;   // infinite or NaN vertices seen (bench RESULT)
@@ -1425,7 +1426,10 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
                 set_uniform(u_mode_loc, pcw.Texture ? 1.0f : 0.0f, pass == 4 ? pt_ref : -1.0f, tsp.UseAlpha ? 1.0f : 0.0f,
                             tsp.IgnoreTexA ? 1.0f : 0.0f);
             last_mode = mode_key;
-            const u32 fog = pass == WIIU_LIST_BACKGROUND ? 2 : tsp.FogCtrl, gouraud = pass == WIIU_LIST_BACKGROUND || isp.Gouraud;
+            // Gouraud from the parameter control word, as the TA does (it copies PCW's shading bits into the ISP word);
+            // the ISP word's own bit, which games may leave clear, flat-shaded Shenmue's faces and MSR's buildings
+            const u32 fog = pass == WIIU_LIST_BACKGROUND ? 2 : tsp.FogCtrl,
+                      gouraud = pass == WIIU_LIST_BACKGROUND || (wiiu_exp_pcw_gouraud ? pcw.Gouraud : isp.Gouraud);
             const u32 shade_key = tsp.ShadInstr | fog << 2 | gouraud << 4;
             if (shade_key != last_shade)
                 flush(BRK_SHADE);
