@@ -41,6 +41,7 @@ struct WiiuStrip
 struct WiiuModVol
 {
     u32 first, count, mode, cull;   // mode: ISP volume instruction (1 inside, 2 outside: closes it); cull: ISP cull mode
+    u32 last;                       // PCW Volume bit: the volume's closing polygon; clear with a mode, an open volume
 };
 
 struct WiiuMvVertex

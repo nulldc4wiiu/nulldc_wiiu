@@ -312,6 +312,9 @@ static float canvas_w = 640.0f, canvas_h = 480.0f;   // of the screen frame bein
 // a new screen frame was converted and isn't in the render target yet; without one the target keeps the last
 // picture and only the blits run (on the console the GX2 thread shares core 1 with the emulator)
 static bool scene_dirty;
+int wiiu_exp_trans_min = 1;
+int wiiu_exp_screen_pos;   // exp_screen_pos=1: screen positions with W = 1 and per-pixel division, as Flycast (passes the TA tests; no gain seen yet)
+static u32 u_screen_vs_loc = ~0u, u_screen_ps_loc = ~0u;   // geo shaders' screen-mode switch (exp_screen_pos)
 static u32 u_mode_loc, u_shade_loc, u_fog_col_loc, u_fog_vcol_loc, u_clamp_min_loc, u_clamp_max_loc, u_clamp_on_loc, tex0_loc,
     fog_table_loc;
 
@@ -523,7 +526,14 @@ bool wiiu_gx2_init()
             u_clamp_max_loc = u.offset;
         else if (!strcmp(u.name, "u_clamp_on"))
             u_clamp_on_loc = u.offset;
+        else if (!strcmp(u.name, "u_screen"))
+            u_screen_ps_loc = u.offset;
     }
+    for (u32 i = 0; i < geo.vertexShader->uniformVarCount; i++)
+        if (!strcmp(geo.vertexShader->uniformVars[i].name, "u_screen"))
+            u_screen_vs_loc = geo.vertexShader->uniformVars[i].offset;
+    printf("[gx2] screen-space positions %s (u_screen at %d/%d)\n", wiiu_exp_screen_pos ? "on" : "off", (int)u_screen_vs_loc,
+           (int)u_screen_ps_loc);
     for (u32 i = 0; i < geo.pixelShader->samplerVarCount; i++)
     {
         const GX2SamplerVar &v = geo.pixelShader->samplerVars[i];
@@ -913,10 +923,21 @@ static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 t
         float d = invw * scale;
         if (d > 1.0f)
             d = 1.0f;
-        out[i].x = (v.x / hw - 1.0f) * w;
-        out[i].y = (1.0f - v.y / hh) * w;
-        out[i].z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
-        out[i].w = w;
+        if (wiiu_exp_screen_pos)
+        {
+            // screen mode (geo.vert): the screen position with W = 1, and 1/W for the per-pixel division
+            out[i].x = v.x / hw - 1.0f;
+            out[i].y = 1.0f - v.y / hh;
+            out[i].z = wiiu_exp_halfz ? d : 2.0f * d - 1.0f;
+            out[i].w = invw;
+        }
+        else
+        {
+            out[i].x = (v.x / hw - 1.0f) * w;
+            out[i].y = (1.0f - v.y / hh) * w;
+            out[i].z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
+            out[i].w = w;
+        }
         out[i].col = v.col;
         out[i].spc = v.spc;
         out[i].u = v.u;
@@ -954,6 +975,7 @@ static void start_conv_helper()
     }
 }
 int wiiu_exp_pcw_gouraud = 1;   // exp_pcw_gouraud=0: Gouraud from the ISP word, as before
+int wiiu_exp_mv_open = 1;   // exp_mv_open=0: every volume by parity, as before
 int wiiu_exp_mv_cull;   // exp_mv_cull=1: volume triangles culled by their ISP cull mode (Flycast); unproven, off
 int wiiu_exp_fix_inf;
 u32 wiiu_bad_vertices;   // infinite or NaN vertices seen (bench RESULT)
@@ -1034,10 +1056,20 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         if (d > 1.0f)
             d = 1.0f;
         GpuVertex &o = out[sc->mv_base + i];
-        o.x = (v.x / hw - 1.0f) * w;
-        o.y = (1.0f - v.y / hh) * w;
-        o.z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
-        o.w = w;
+        if (wiiu_exp_screen_pos)
+        {
+            o.x = v.x / hw - 1.0f;
+            o.y = 1.0f - v.y / hh;
+            o.z = wiiu_exp_halfz ? d : 2.0f * d - 1.0f;
+            o.w = invw;
+        }
+        else
+        {
+            o.x = (v.x / hw - 1.0f) * w;
+            o.y = (1.0f - v.y / hh) * w;
+            o.z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
+            o.w = w;
+        }
         o.col = o.spc = 0;
         o.u = o.v = 0.0f;
     }
@@ -1068,18 +1100,24 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         }
     }
     sc->idx_count = ni;
-    // the PVR sorts translucent polygons by depth itself unless pre-sort mode is on; approximate that per strip
-    // by the mean 1/w of its vertices, smallest (farthest) first, keeping submission order for ties
+    // the PVR sorts translucent polygons by depth itself unless pre-sort mode is on; approximate that per strip,
+    // smallest (farthest) first, keeping submission order for ties. The key is the strip's smallest 1/w, its
+    // farthest point, as Flycast keys each triangle: a mean let MvC2's cloud layer, which runs from the horizon to
+    // right in front of the camera, sort as nearest and draw over the character tiles (exp_trans_min=0: the mean)
     sc->trans_count = 0;
     for (u32 i = 0; i < f->ns; i++)
     {
         const WiiuStrip &st = f->s[i];
         if (st.list != 2)
             continue;
-        float sum = 0.0f;
+        float sum = 0.0f, lo = 1e30f;
         for (u32 k = 0; k < st.count; k++)
-            sum += f->v[st.first + k].z;
-        trans_key[i] = sum / st.count;
+        {
+            const float z = f->v[st.first + k].z;
+            sum += z;
+            lo = z < lo ? z : lo;
+        }
+        trans_key[i] = wiiu_exp_trans_min ? lo : sum / st.count;
         sc->trans_order[sc->trans_count++] = i;
     }
     if (!(f->isp_feed_cfg & 1))
@@ -1197,12 +1235,15 @@ static void draw_modvols()
             // the volume's own cull mode, as Flycast: volumes may leave out the faces culling would drop
             const u32 cull = wiiu_exp_mv_cull ? m.cull : 0;
             GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, cull == 2, cull == 3);
-            // GREATER passes where the volume surface is in front of the scene
+            // GREATER passes where the volume surface is in front of the scene. A closed volume flips bit 0x01 (an odd
+            // count of faces in front: inside); an open one or a quad (PCW Volume bit clear on a header with a mode) sets
+            // it wherever any face is in front, as Flycast does. Parity on Soulcalibur's open shadow volumes tore them
+            const bool open = wiiu_exp_mv_open && !m.last && (m.mode == 1 || m.mode == 2);
+            const GX2StencilFunction op = open ? GX2_STENCIL_FUNCTION_REPLACE : GX2_STENCIL_FUNCTION_INV;
             GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_GREATER, TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS,
-                                      GX2_STENCIL_FUNCTION_INV, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP,
-                                      GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_INV, GX2_STENCIL_FUNCTION_KEEP,
-                                      GX2_STENCIL_FUNCTION_KEEP);
-            GX2SetStencilMask(0xFF, 0x01, 0, 0xFF, 0x01, 0);
+                                      op, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP,
+                                      GX2_COMPARE_FUNC_ALWAYS, op, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetStencilMask(0xFF, 0x01, 0x01, 0xFF, 0x01, 0x01);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, m.count * 3, mv_base + m.first * 3, 1);
         }
         if (m.mode == 1 || m.mode == 2)
@@ -1253,6 +1294,13 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
     GX2SetFetchShader(&geo.fetchShader);
     GX2SetVertexShader(geo.vertexShader);
     GX2SetPixelShader(geo.pixelShader);
+    {
+        const float on[4] = { wiiu_exp_screen_pos ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+        if (u_screen_vs_loc != ~0u)
+            GX2SetVertexUniformReg(u_screen_vs_loc, 4, (u32 *)on);
+        if (u_screen_ps_loc != ~0u)
+            GX2SetPixelUniformReg(u_screen_ps_loc, 4, (u32 *)on);
+    }
     GX2RSetAttributeBuffer(vbuf, 0, sizeof(GpuVertex), 0);
     GX2SetPixelTexture(&tex, tex0_loc);
     GX2SetPixelSampler(&sampler, tex0_loc);

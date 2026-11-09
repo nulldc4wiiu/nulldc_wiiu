@@ -145,7 +145,7 @@ struct FrameDecoder
     {
         if (list != 1 || dec->n_mp >= WIIU_MAX_MV_PARAMS)
             return;
-        dec->mp[dec->n_mp++] = { dec->n_mv_tris, 0, p->isp.full >> 29, (p->isp.full >> 27) & 3 };
+        dec->mp[dec->n_mp++] = { dec->n_mv_tris, 0, p->isp.full >> 29, (p->isp.full >> 27) & 3, p->pcw.Volume };
     }
     static void fastcall AppendModVolVertexA(TA_ModVolA *a) { mv_a = *a; }
     static void fastcall AppendModVolVertexB(TA_ModVolB *b)
@@ -870,6 +870,7 @@ void SoftReset()
 extern "C" int get_controller_type();
 extern "C" u16 GetLightGunX(int port);
 extern "C" u16 GetLightGunY(int port);
+float wiiu_depth_cap;   // depth_cap=X (test): the depth scale's largest 1/W at most X
 int wiiu_depth_stats;   // depth_stats=1: log the 1/w spread every 60 renders (test setting)
 int wiiu_exp_depth_drawn = 1;   // exp_depth_drawn=0: the depth scale from every vertex and volume, as before
 int wiiu_dump_render;   // dump_render=N: log the decoded frame at render N
@@ -938,6 +939,8 @@ void wiiu_ta_decode(WiiuFrame *f)
         }
         if (m > 0.0f)
             f->max_invw = m;
+        if (wiiu_depth_cap > 0.0f && f->max_invw > wiiu_depth_cap)
+            f->max_invw = wiiu_depth_cap;   // test: depth precision for the bulk, nearer vertices clamp
     }
     if (f->has_bg && f->nv + 4 <= WIIU_MAX_VERTICES && f->ns < WIIU_MAX_STRIPS)
     {
@@ -992,14 +995,32 @@ void wiiu_ta_decode(WiiuFrame *f)
                 ymin = v.y < ymin ? v.y : ymin; ymax = v.y > ymax ? v.y : ymax;
                 tiny += !(v.z > 1e-6f);
             }
-            printf("[frame] volume %u: cull %u, first %u, %u triangles, mode %u, 1/w %g..%g (%u <= 1e-6), x %g..%g, y %g..%g\n", i,
-                   m.cull, m.first, m.count, m.mode, zmin, zmax, tiny, xmin, xmax, ymin, ymax);
+            printf("[frame] volume %u: last %u, cull %u, first %u, %u triangles, mode %u, 1/w %g..%g (%u <= 1e-6), x %g..%g, y %g..%g\n", i,
+                   m.last, m.cull, m.first, m.count, m.mode, zmin, zmax, tiny, xmin, xmax, ymin, ymax);
         }
         for (u32 i = 0; i < f->ns; i++)
         {
             const WiiuStrip &st = f->s[i];
             printf("[frame] strip %u list %u first %u n %u pcw %08x isp %08x tsp %08x tcw %08x\n", i, st.list, st.first,
                    st.count, st.pcw, st.isp, st.tsp, st.tcw);
+            {
+                // 16-bit textures: how their texels' alpha is spread (ARGB4444's top nibble, ARGB1555's top bit)
+                const u32 fmt = (st.tcw >> 27) & 7, addr = (st.tcw << 3) & VRAM_MASK;
+                const u32 tw = 8u << ((st.tsp >> 3) & 7), th = 8u << (st.tsp & 7);
+                if ((st.pcw >> 3 & 1) && (fmt == 0 || fmt == 2) && !(st.tcw >> 30 & 1))
+                {
+                    u32 hist[16] = {};
+                    for (u32 k = 0; k < tw * th && addr + k * 2 + 1 < VRAM_MASK; k++)
+                    {
+                        const u32 a = addr + k * 2;
+                        const u16 px = *host_ptr_xor((u16 *)&PVRPARAMS.vram[a & VRAM_MASK & ~1u]);
+                        hist[fmt == 2 ? px >> 12 : (px >> 15) * 15]++;
+                    }
+                    printf("[frame]   texture %ux%u fmt %u alpha nibbles 0:%u 1-7:%u 8-14:%u 15:%u\n", tw, th, fmt, hist[0],
+                           hist[1] + hist[2] + hist[3] + hist[4] + hist[5] + hist[6] + hist[7],
+                           hist[8] + hist[9] + hist[10] + hist[11] + hist[12] + hist[13] + hist[14], hist[15]);
+                }
+            }
             for (u32 k = 0; k < st.count; k++)
             {
                 const WiiuVertex &v = f->v[st.first + k];

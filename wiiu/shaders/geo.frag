@@ -5,6 +5,7 @@ flat in vec4 f_col;
 flat in vec4 f_spc;
 in vec2 v_uv;
 in float v_w;
+in float v_iw;
 out vec4 color;
 uniform sampler2D tex0;
 // 128 x 2 lookup-table fog: each entry's high byte in row 1, low byte in row 0
@@ -19,6 +20,7 @@ uniform vec4 u_fog_vcol;   // FOG_COL_VERT, for vertex fog
 uniform vec4 u_clamp_min;  // FOG_CLAMP_MIN and FOG_CLAMP_MAX: the final colour of polygons with TSP colour
 uniform vec4 u_clamp_max;  // clamping is limited to them (u_clamp_on.x)
 uniform vec4 u_clamp_on;
+uniform vec4 u_screen;   // x > 0.5: screen mode (geo.vert): divide the interpolated attributes by 1/W
 
 // the PVR indexes its fog table by density x W on a log2 scale, 16 entries per octave, and blends the two
 // bytes of an entry by the fraction in between (as Flycast does)
@@ -33,14 +35,18 @@ float table_fog(float w)
 void main()
 {
     bool gouraud = u_shade.w > 0.5;
-    vec4 base = gouraud ? v_col : f_col;
-    vec4 spc = gouraud ? v_spc : f_spc;
+    bool screen = u_screen.x > 0.5;
+    float pw = screen ? 1.0 / v_iw : 1.0;   // screen mode: W at this pixel
+    vec2 uv = v_uv * pw;
+    float w = screen ? pw : v_w;
+    vec4 base = gouraud ? v_col * pw : f_col;
+    vec4 spc = gouraud ? v_spc * pw : f_spc;
     if (u_mode.z < 0.5)
         base.a = 1.0;
     vec4 c = base;
     if (u_mode.x > 0.5)
     {
-        vec4 t = texture(tex0, v_uv);
+        vec4 t = texture(tex0, uv);
         if (u_mode.w > 0.5)
             t.a = 1.0;
         int instr = int(u_shade.x);
@@ -58,11 +64,11 @@ void main()
         discard;
     int fog = int(u_shade.y);
     if (fog == 0)
-        c.rgb = mix(c.rgb, u_fog_col.rgb, table_fog(v_w));
+        c.rgb = mix(c.rgb, u_fog_col.rgb, table_fog(w));
     else if (fog == 1)
         c.rgb = mix(c.rgb, u_fog_vcol.rgb, spc.a);
     else if (fog == 3)
-        c = vec4(u_fog_col.rgb, table_fog(v_w));
+        c = vec4(u_fog_col.rgb, table_fog(w));
     if (u_clamp_on.x > 0.5)
         c = clamp(c, u_clamp_min, u_clamp_max);
     color = c;
