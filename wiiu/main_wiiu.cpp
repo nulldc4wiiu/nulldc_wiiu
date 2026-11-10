@@ -184,7 +184,8 @@ extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp: the [CC] call-o
 extern "C" int g_frame_prof_preset;   // plugs/drkPvr/frame_prof.cpp
 u64 g_wiiu_prof[10];   // wiiu/prof_wiiu.h
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
-extern int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast, g_exp_aica_thread;
+extern int g_exp_ssa;   // dc/sh4/rec_v2/shil.cpp
+extern int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast, g_exp_aica_thread, g_exp_sq_lazy, g_exp_sq_words;
 extern int wiiu_exp_single_pass, wiiu_exp_gpu_convert, wiiu_exp_trans_min, wiiu_exp_screen_pos, wiiu_exp_mv_open, wiiu_exp_pcw_gouraud, wiiu_depth_stats, wiiu_exp_depth_drawn, wiiu_exp_mv_cull, wiiu_exp_canvas_regs, wiiu_exp_split_convert, g_exp_arm_thread, g_exp_fm_map, wiiu_exp_fix_inf, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern u32 wiiu_bad_vertices;
 #ifdef WIIU_INSTRUMENT
@@ -500,6 +501,12 @@ static void load_wiiu_cfg()
             wiiu_exp_halfz = atoi(value);
         else if (!strcmp(key, "exp_fpscr_ni"))
             wiiu_exp_fpscr_ni = atoi(value);
+        else if (!strcmp(key, "exp_ssa"))
+            g_exp_ssa = atoi(value);
+        else if (!strcmp(key, "exp_sq_lazy"))
+            g_exp_sq_lazy = atoi(value);
+        else if (!strcmp(key, "exp_sq_words"))
+            g_exp_sq_words = atoi(value);
         else if (!strcmp(key, "exp_sq_fast"))
             g_exp_sq_fast = atoi(value);
         else if (!strcmp(key, "exp_aica_thread"))

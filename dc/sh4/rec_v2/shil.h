@@ -128,6 +128,7 @@ struct shil_param
         Sh4RegType _reg;
     };
     u32 type;
+    u16 version[16];   // exp_ssa (shil.cpp): which write of each register this operand reads or makes
 
     // -------------------------------------------------------------------------
     // Type predicates

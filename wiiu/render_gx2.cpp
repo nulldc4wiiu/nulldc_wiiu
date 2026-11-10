@@ -599,6 +599,11 @@ u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // how the game feeds the TA (statu
 // exp_dma_async (needs exp_scan_thread): a ch2 DMA to the TA only queues its source; the scanner thread copies it too.
 // The DMA-done interrupt doesn't wait, so a game reusing the buffer at once would send stale data.
 int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast;
+// exp_sq_lazy (without the scan thread): store queue and DMA blocks are only copied; the emulator thread scans
+// what arrived each timeslice (wiiu_ta_poll) and at every ordering point, so a list-end interrupt is raised up to
+// a timeslice later than its block. exp_sq_words: the store queue copy as eight words, the size the game's own
+// stores wrote them in, not four doubles (a test: the doubles' first loads are the path's hottest samples)
+int g_exp_sq_lazy, g_exp_sq_words;
 static const u32 DMA_QUEUE = 256;
 static struct { const u32 *data; u32 blocks; } dma_queue[DMA_QUEUE];
 static volatile u32 dma_w, dma_r;
@@ -610,10 +615,15 @@ static OSThread scan_thread;
 static volatile u32 ta_irq_count[5];
 static u32 ta_irq_seen[5];
 static void scan_block(const u32 *b);
+static void scan_upto(u32 n);
 void wiiu_ta_poll()
 {
     if (!scan_threaded)
+    {
+        if (g_exp_sq_lazy)
+            scan_upto(build->n_ta);
         return;
+    }
     for (u32 l = 0; l < 5; l++)
         if (ta_irq_seen[l] != ta_irq_count[l])
         {
@@ -690,7 +700,11 @@ static void scan_start()
 static void scan_sync_lock()
 {
     if (!scan_threaded)
+    {
+        if (g_exp_sq_lazy)
+            scan_upto(build->n_ta);
         return;
+    }
     OSFastMutex_Lock(&scan_lock);
     dma_copy(~0u);
     scan_upto(build->n_ta);
@@ -799,7 +813,7 @@ void wiiu_ta_input(const u32 *data, u32 blocks)
     }
     for (u32 i = 0; i < blocks; i++, data += 8)
     {
-        if (!scan_threaded)
+        if (!scan_threaded && !g_exp_sq_lazy)
             scan_block(data);
         if (build->n_ta < WIIU_MAX_TA_BLOCKS)
         {
@@ -862,17 +876,26 @@ void FASTCALL wiiu_sqw_fast(u32 dst)
     if (g_exp_sq_fast && !scan_threaded && build->n_ta < WIIU_MAX_TA_BLOCKS)
     {
         // exp_sq_fast: a block continuing a vertex needs no parsing, and four doubles move it in half the instructions
-        if (scan_skip)
+        if (g_exp_sq_lazy)
+            ;
+        else if (scan_skip)
             scan_skip--;
         else
             scan_block(data);
         u32 *d = build->ta[build->n_ta++];
+        if (g_exp_sq_words)
+        {
+            __asm__ volatile("dcbz 0,%0" : : "r"(d) : "memory");
+            for (int k = 0; k < 8; k++)
+                d[k] = data[k];
+            return;
+        }
         __asm__ volatile("dcbz 0,%0\n\tlfd 0,0(%1)\n\tlfd 1,8(%1)\n\tlfd 2,16(%1)\n\tlfd 3,24(%1)\n\t"
                          "stfd 0,0(%0)\n\tstfd 1,8(%0)\n\tstfd 2,16(%0)\n\tstfd 3,24(%0)"
                          : : "b"(d), "b"(data) : "memory", "fr0", "fr1", "fr2", "fr3");
         return;
     }
-    if (!scan_threaded)
+    if (!scan_threaded && !g_exp_sq_lazy)
         scan_block(data);
     if (build->n_ta < WIIU_MAX_TA_BLOCKS)
     {
