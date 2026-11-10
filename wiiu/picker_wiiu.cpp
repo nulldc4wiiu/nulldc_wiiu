@@ -255,7 +255,7 @@ static void setup(const char *home)
         data_dir.pop_back();
     static const char *const exts[] = { "gdi", "cdi", "mds", "elf", nullptr };
     static const char *const skip[] = { "data", nullptr };
-    static const picker_entry extras[] = { { "Dreamcast BIOS (no disc)", "" } };
+    static const picker_entry extras[] = { { "Dreamcast menu (no disc): memory cards, settings", "" } };
     static picker_cfg cfg;
     cfg.app_name = "nullDC";
     cfg.content_noun = "disc";
@@ -268,7 +268,8 @@ static void setup(const char *home)
     cfg.n_extras = 1;
     // the Dreamcast BIOS is what other emulators call the core's system files: without it nothing boots
     static std::string bios_help, warning;
-    bios_help = "Dreamcast BIOS: dc_boot.bin and dc_flash.bin in " + data_dir + "/data/";
+    bios_help = "Dreamcast BIOS: dc_boot.bin and dc_flash.bin in " + data_dir + "/data/. Memory cards A1-D2 are "
+                "vmu_save_*.bin there too; the Dreamcast menu's File screen copies and deletes saves.";
     cfg.help_extra = bios_help.c_str();
     std::string boot = data_dir + "/data/dc_boot.bin";
     if (FILE *f = fopen(boot.c_str(), "rb"))
