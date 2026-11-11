@@ -308,25 +308,8 @@ static void dec_DynamicSet(u32 regbase,u32 offs=0)
 		block.Emit(shop_jdyn,reg_pc_dyn,mk_reg((Sh4RegType)regbase),mk_imm(offs));
 }
 
-// exp_fuse (Wii U experiment, wiiu.cfg): an unconditional forward bra doesn't end the block; decoding carries on at
-// the target after the delay slot, saving the next block's prologue and link. Only forward, so loops and the idle
-// rules, which match whole small blocks, stay as they were.
-extern "C" int g_exp_fuse;
-int g_exp_fuse;
-static u32 fused_first_end;   // where the block's first contiguous run ended (sh4_code_size), 0: not fused
 static void dec_End(u32 dst,BlockEndType flags,bool delay)
 {
-	if (g_exp_fuse && flags == BET_StaticJump && delay && dst > state.cpu.rpc && block.opcodes < 48 &&
-	    !state.ngen.OnlyDynamicEnds && !state.cpu.is_delayslot)
-	{
-		if (!fused_first_end)
-			fused_first_end = state.cpu.rpc + 4;
-		state.NextOp=NDO_Delayslot;
-		state.DelayOp=NDO_Jump;
-		state.JumpOp=NDO_NextOp;
-		state.JumpAddr=dst;
-		return;
-	}
 	if (state.ngen.OnlyDynamicEnds && flags == BET_StaticJump)
 	{
 		block.Emit(shop_mov32,mk_reg(reg_nextpc),mk_imm(dst));
@@ -1541,7 +1524,6 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 		case NDO_Jump:
 			state.NextOp=state.JumpOp;
 			state.cpu.rpc=state.JumpAddr;
-			state.cpu.is_delayslot=false;
 			break;
 
 		case NDO_End:
@@ -1550,8 +1532,7 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 	}
 
 _end:
-	block.sh4_code_size=(fused_first_end ? fused_first_end : state.cpu.rpc)-block.start;
-	fused_first_end=0;
+	block.sh4_code_size=state.cpu.rpc-block.start;
 	block.NextBlock=state.NextAddr;
 	block.BranchBlock=state.JumpAddr;
 	block.BlockType=state.BlockType;

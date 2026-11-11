@@ -67,8 +67,6 @@ extern BlockCacheFlatEntry bm_bcache[BM_BLOCKLIST_COUNT];
 // New functions (not in original, but useful for Wii port)
 void bm_Init();
 bool bm_RemoveCode(u32 addr);
-u32 bm_FindHost(void* host);
-u32 bm_Snapshot(u32* codes, u32* addrs, u32 max);
 void bm_InvalidateRange(u32 start_addr, u32 end_addr);
 
 // Statistics functions (only available when BM_ENABLE_STATS is defined)

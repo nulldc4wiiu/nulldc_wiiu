@@ -97,7 +97,6 @@ void update_arm_interrupts()
 // Returns whether an SH4 interrupt is pending (Flycast's shape; AICA_RACE uses it).
 #ifdef __WIIU__
 bool aica_on_sound_thread();
-bool aica_defer_reg(u32 reg, u32 data, u32 sz);
 static volatile bool sh4_ints_dirty;
 #endif
 bool UpdateSh4Ints()
@@ -217,10 +216,6 @@ void FASTCALL UpdateAICA(u32 Samples)
 template<u32 sz>
 void WriteAicaReg(u32 reg, u32 data)
 {
-#ifdef __WIIU__
-    if (aica_defer_reg(reg, data, sz))
-        return;
-#endif
     switch (reg)
     {
     case SCIPD_addr:
@@ -351,8 +346,6 @@ void AICA_Term()
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 extern int g_exp_aica_thread;
-int g_exp_arm_thread;   // exp_arm_thread (needs exp_aica_thread): timers and the ARM7 run on the sound thread too
-void arm_SetEnabled(bool enabled);
 void aica_cdda_prefetch();
 // The mixer stays close behind the emulator: the game's sound driver reads channel state back (is a voice playing?),
 // and at the console's ~450-sample lag a voice it had just keyed on still looked idle (MvC2's voices and music went
@@ -362,7 +355,7 @@ int g_aica_prio = 15;     // aica_prio=N: the mixing thread's priority (the GX2 
 u32 g_aica_lag_max, g_aica_lag_sum, g_aica_lag_n;   // the mixer's lag behind the emulator, for the [audio] line
 static const u32 AICA_OPS = 8192;
 void aica_clear_looped_now(u32 chan);
-// reg 0xFFFF: clear the channel's loop flag; 0xFFFE: WriteAicaReg (chan the register, data, size in sz); 0xFFFD: ARM enable
+// reg 0xFFFF: clear the channel's loop flag
 static struct { u32 sample; u16 chan, reg; u32 data, sz; } aica_ops[AICA_OPS];
 static volatile u32 ops_w, ops_r;
 static volatile u32 aica_pending, aica_done;
@@ -383,15 +376,6 @@ static void aica_apply_ops(u32 sample)
         const auto &op = aica_ops[ops_r % AICA_OPS];
         if (op.reg == 0xFFFF)
             aica_clear_looped_now(op.chan);
-        else if (op.reg == 0xFFFE)
-        {
-            if (op.sz == 1)
-                WriteAicaReg<1>(op.chan, op.data);
-            else
-                WriteAicaReg<2>(op.chan, op.data);
-        }
-        else if (op.reg == 0xFFFD)
-            arm_SetEnabled(op.data != 0);
         else
         {
             *(u32 *)&mixer_regs[(op.chan * 0x80 + op.reg) & ~3u] = op.data;
@@ -414,25 +398,6 @@ static void aica_queue(u32 chan, u32 reg, u32 data = 0, u32 sz = 0)
     ops_w = ops_w + 1;
 }
 bool aica_on_sound_thread() { return aica_started && OSGetCurrentThread() == &aica_thread; }
-// exp_arm_thread: registers that drive the ARM side go through the queue from the emulator thread. The SH4's own
-// interrupt clears (MCIRE, MCIEB) stay immediate, or its handler would re-enter until the queue caught up
-bool aica_defer_reg(u32 reg, u32 data, u32 sz)
-{
-    if (!g_exp_arm_thread || !aica_started || aica_on_sound_thread())
-        return false;
-    if (reg != SCIPD_addr && reg != SCIRE_addr && reg != SCIEB_addr && reg != TIMER_A && reg != TIMER_B && reg != TIMER_C)
-        return false;
-    aica_queue(reg, 0xFFFE, data, sz);
-    return true;
-}
-void aica_arm_enable(bool on)
-{
-    if (g_exp_arm_thread && aica_started)
-        aica_queue(0, 0xFFFD, on);
-    else
-        arm_SetEnabled(on);
-}
-bool aica_sound_thread_up() { return aica_started; }
 void aica_poll_ints()
 {
     if (sh4_ints_dirty)
@@ -465,29 +430,14 @@ void aica_clear_looped(u32 chan)
     else
         aica_clear_looped_now(chan);
 }
-void arm_run_samples(u32 samples);   // arm_aica.cpp
-static u32 arm_due;
-int g_aica_lag_test;   // aica_lag_test=N: the mixer keeps N samples behind (a console's lag, reproduced in Cemu)
 static int aica_main(int, const char **)
 {
     while (!aica_stop)
     {
-        while (aica_done != aica_pending && (u32)(aica_pending - aica_done) > (u32)g_aica_lag_test)
+        while (aica_done != aica_pending)
         {
             aica_apply_ops(aica_done);
             AICA_Sample();
-            if (g_exp_arm_thread)
-            {
-                SCIPD->SAMPLE_DONE = 1;
-                for (int i = 0; i < 3; i++)
-                    timers[i].StepTimer();
-                update_arm_interrupts();
-                if (++arm_due == 8)
-                {
-                    arm_run_samples(arm_due);
-                    arm_due = 0;
-                }
-            }
             aica_done = aica_done + 1;
         }
         aica_apply_ops(aica_done);
@@ -544,11 +494,7 @@ void libAICA_TimeStep()
 #endif
 #ifdef __WIIU__
     if (g_exp_aica_thread)
-    {
         aica_thread_step();
-        if (g_exp_arm_thread)
-            return;
-    }
     else
 #endif
     AICA_Sample();

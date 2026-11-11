@@ -170,10 +170,6 @@ void ppc_bx(void* dst,u32 LK)
 // is volatile and nothing in the JIT uses it, so it is reloaded after every call into C. Not after calls to the JIT's
 // own stubs: their sites have a fixed layout, and the stubs reach C through ppc_call themselves.
 extern "C" { int g_exp_fm_x; }
-#ifdef WIIU_INSTRUMENT
-int g_prof_links;
-extern u32 g_cnt_dyn, g_cnt_exit[8];
-#endif
 extern u32 g_wiiu_fm_window;
 extern int g_wii_fastmem_active;
 extern u8* CodeCache;
@@ -1299,20 +1295,6 @@ void ngen_End(DecodedBlock* block)
 	// UpdateINTC -> Do_Exception (reads r[15], swaps the register bank); that
 	// case brackets the call with reg_flush_all()/reg_reload_all() locally.
 	// shop_ifb and the canonical fallback similarly self-bracket.
-#ifdef WIIU_INSTRUMENT
-	if (g_prof_links)
-	{
-		// prof_links: every block end by kind (0 conditional, 1 static, 2 dynamic call, 3 dynamic jump, 4 return,
-		// 5 interrupt check); rarg1/rarg2 are free and lwz/addi/stw leave CR0 alone
-		const u32 bt = block->BlockType;
-		const int kind = bt == BET_Cond_0 || bt == BET_Cond_1 ? 0 : bt == BET_StaticCall || bt == BET_StaticJump ? 1
-		               : bt == BET_DynamicCall ? 2 : bt == BET_DynamicJump ? 3 : bt == BET_DynamicRet ? 4 : 5;
-		u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_cnt_exit[kind]);
-		ppc_lwz(ppc_rarg2,ppc_rarg1,lo);
-		ppc_addi(ppc_rarg2,ppc_rarg2,1);
-		ppc_stw(ppc_rarg2,ppc_rarg1,lo);
-	}
-#endif
 	switch(block->BlockType)
 	{
 	case BET_Cond_0:
@@ -1382,16 +1364,6 @@ void ngen_End(DecodedBlock* block)
 	case BET_DynamicJump:
 	case BET_DynamicRet:
 		//printf("Dynamic !\n");
-#ifdef WIIU_INSTRUMENT
-		if (g_prof_links)
-		{
-			// sampler apps: count dynamic exits (rarg1/rarg2 are free here)
-			u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_cnt_dyn);
-			ppc_lwz(ppc_rarg2,ppc_rarg1,lo);
-			ppc_addi(ppc_rarg2,ppc_rarg2,1);
-			ppc_stw(ppc_rarg2,ppc_rarg1,lo);
-		}
-#endif
 		//mov reg,djump
 		ppc_ori(ppc_rarg0,ppc_djump,0);  // mr rarg0, djump
 
@@ -1443,16 +1415,6 @@ void ngen_End(DecodedBlock* block)
 			}
 		}
 		// generic path starts here (the IC's fall-through target)
-#ifdef WIIU_INSTRUMENT
-		if (g_prof_links)
-		{
-			// prof_links: exits past the inline cache, call/jump in [6], returns in [7]; rarg0 holds the target
-			u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_cnt_exit[block->BlockType == BET_DynamicRet ? 7 : 6]);
-			ppc_lwz(ppc_rarg2,ppc_rarg1,lo);
-			ppc_addi(ppc_rarg2,ppc_rarg2,1);
-			ppc_stw(ppc_rarg2,ppc_rarg1,lo);
-		}
-#endif
 
 		if (get_bcache_preset())
 		{
@@ -2072,11 +2034,6 @@ struct HotBlock
 	u8* ppc_start;
 	u32 ppc_size;	// bytes of HOT PPC body (filled in at the end of ngen_Compile)
 	u32 ppc_cold;	// bytes of out-of-line mem slow paths FlushCold() appended
-	// [MEMC] memory ops by kind (Wii U fastmem sizing): runtime-address scalar
-	// reads/writes and 64-bit pairs go through the inline table lookup today;
-	// compile-time addresses are resolved when the block is compiled.
-	u16 rt_rd, rt_wr, rt_pair, const_mem;
-	u16 ftrv, fipr, fmac, sync_fpscr;	// FPU work (paired-single sizing) and full FPSCR syncs
 };
 
 // ChuChu compiles ~10k blocks between cache clears; at 2048 the first run left
@@ -2140,26 +2097,6 @@ static s32 hotblocks_slot(DecodedBlock* block)
 	h->ppc_start = 0;
 	h->ppc_size  = 0;
 	h->ppc_cold  = 0;
-	h->rt_rd = h->rt_wr = h->rt_pair = h->const_mem = 0;
-	h->ftrv = h->fipr = h->fmac = h->sync_fpscr = 0;
-	for (size_t i = 0; i < block->oplist.size(); i++)
-	{
-		const shil_opcode& op = block->oplist[i];
-		h->ftrv += op.op == shop_ftrv;
-		h->fipr += op.op == shop_fipr;
-		h->fmac += op.op == shop_fmac;
-		h->sync_fpscr += op.op == shop_sync_fpscr && !(op.flags & SYNC_FPSCR_SZ_ONLY);
-		if (op.op != shop_readm && op.op != shop_writem)
-			continue;
-		if (op.rs1.is_imm())
-			h->const_mem++;
-		else if (op.flags == 8)
-			h->rt_pair++;
-		else if (op.op == shop_readm)
-			h->rt_rd++;
-		else
-			h->rt_wr++;
-	}
 	s_hb_hits[idx] = 0;
 	return idx;
 }
@@ -2201,15 +2138,8 @@ static void hotblocks_disasm(const HotBlock& h)
 
 // Disassemble this block unless its pc has already been dumped. Returns true
 // if it actually emitted a dump.
-// Wii U: hot_after=<s> in wiiu.cfg keeps the disassembly budget for the scene that matters (a fight, not the
-// menus before it): nothing is dumped until that many seconds have been reported
-extern "C" int g_wiiu_hot_dump_after;
-int g_wiiu_hot_dump_after;
-static double s_hb_elapsed;
 static bool hotblocks_dump_once(const HotBlock& h)
 {
-	if (s_hb_elapsed < (double)g_wiiu_hot_dump_after)
-		return false;
 	if (s_hb_dumped_n >= HOT_DUMP_MAX)
 	{
 		// Say so, once. A silent budget exhaustion looks identical to "the
@@ -2234,11 +2164,11 @@ static bool hotblocks_dump_once(const HotBlock& h)
 	return true;
 }
 
+
 extern "C" void hotblocks_dump(double seconds)
 {
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
 		return;
-	s_hb_elapsed += seconds;
 
 	// Totals first, so a block's share of all executed blocks is visible.
 	double all_hits = 0.0, all_ppc = 0.0, all_ops = 0.0;
@@ -2251,25 +2181,6 @@ extern "C" void hotblocks_dump(double seconds)
 
 	if (all_hits <= 0.0)
 		return;
-
-	{
-		double rd = 0.0, wr = 0.0, pair = 0.0, cm = 0.0, ftrv = 0.0, fipr = 0.0, fmac = 0.0, sf = 0.0;
-		for (u32 i=0;i<s_hb_n;i++)
-		{
-			ftrv += (double)s_hb_hits[i] * s_hb[i].ftrv;
-			fipr += (double)s_hb_hits[i] * s_hb[i].fipr;
-			fmac += (double)s_hb_hits[i] * s_hb[i].fmac;
-			sf   += (double)s_hb_hits[i] * s_hb[i].sync_fpscr;
-			rd   += (double)s_hb_hits[i] * s_hb[i].rt_rd;
-			wr   += (double)s_hb_hits[i] * s_hb[i].rt_wr;
-			pair += (double)s_hb_hits[i] * s_hb[i].rt_pair;
-			cm   += (double)s_hb_hits[i] * s_hb[i].const_mem;
-		}
-		printf("[MEMC] %.2fs  SH4 ops %.0f/s  PPC %.1f MB/s  runtime-address reads %.0f/s writes %.0f/s pairs %.0f/s  const-address %.0f/s\n",
-			seconds, all_ops/seconds, all_ppc/seconds/1e6, rd/seconds, wr/seconds, pair/seconds, cm/seconds);
-		printf("[MEMC] FPU: ftrv %.0f/s fipr %.0f/s fmac %.0f/s, full fpscr syncs %.0f/s\n",
-			ftrv/seconds, fipr/seconds, fmac/seconds, sf/seconds);
-	}
 
 	printf("[HOT] %.2fs  %u blocks tracked, %.0f entries/s, %.1f PPC B per SH4 op (execution-weighted)\n",
 		seconds, s_hb_n, all_hits/seconds, all_ops>0.0?(all_ppc/all_ops):0.0);
@@ -2348,7 +2259,9 @@ extern "C" void hotblocks_dump(double seconds)
 		idx[best] = idx[--left]; // already on file, try the next costliest
 	}
 	for (u32 i=0;i<s_hb_n;i++)
+	{
 		s_hb_hits[i] = 0;
+	}
 
 	fflush(stdout);
 }
@@ -2644,10 +2557,6 @@ static u8  s_fm_pool[FM_POOL_SIZE] __attribute__((aligned(32)));
 #define FM_WINDOW 0u
 #endif
 static u32 s_fm_pool_used   = 0;
-#ifdef WIIU_INSTRUMENT
-u32 wiiu_fm_pool_lo() { return (u32)(uintptr_t)s_fm_pool; }
-u32 wiiu_fm_pool_hi() { return (u32)(uintptr_t)s_fm_pool + FM_POOL_SIZE; }
-#endif
 
 #if defined(__WIIU__)
 #define FM_ACCESS(indexed,dform) do { if (g_exp_fm_x) { indexed; } else { dform; } } while (0)

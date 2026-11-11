@@ -30,7 +30,6 @@ static const float BASE_RATIO = 44100.0f / 48000.0f;
 // over 100% (when the emulator runs ahead the full ring paces it, and this keeps the queue from sitting full)
 // The picker's "Sound when slow" option sets the floor: 0.97 keeps the pitch and lets the queue run dry instead (gaps)
 float wiiu_audio_min_speed = 0.60f;
-bool wiiu_audio_no_pacing;   // bench= in wiiu.cfg: the emulator runs flat out, the sound is whatever fits
 static const float MAX_SPEED = 1.005f;
 static const u32 BLOCK = 64;             // samples written and flushed at a time
 
@@ -230,7 +229,7 @@ static void write_block()
         // wait for room, a frame callback at a time, but never long: a stopped voice frees nothing, and an
         // output that drains far below the sample rate (Cemu's, when its audio device stalls; the steering never
         // goes below 60%) isn't waited for at all, rather than holding the emulator at a crawl
-        for (int i = 0; i < 50 && playing && !output_stalled && !wiiu_audio_no_pacing && queued() + BLOCK > MAX_QUEUED; i++)
+        for (int i = 0; i < 50 && playing && !output_stalled && queued() + BLOCK > MAX_QUEUED; i++)
         {
             OSSleepTicks(OSMillisecondsToTicks(1));
             stat_waits++;

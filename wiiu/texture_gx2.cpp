@@ -318,7 +318,6 @@ static s16 buckets[BUCKETS];
 static bool buckets_ready;
 static inline u32 bucket_of(u32 tcw, u32 size) { return ((tcw * 0x9E3779B1u) ^ size) >> 24; }
 u32 texture_decodes;
-int wiiu_tex_full_hash;   // tex_full_hash=1: every texture fully checksummed every frame (test: stale tiles?)
 OSTime texture_decode_ticks;   // spent decoding and checksumming, for the GX2 thread's time report
 static TexEntry cache[CACHE_SIZE];
 
@@ -466,7 +465,7 @@ static bool update(TexEntry *e, u32 frame_seq)
     tsp.TexV = e->size & 7;
     // the sampled sum every frame; the full one when that changed, on fresh entries, and on every 16th frame
     // (staggered across entries) to catch writes the samples miss
-    const u32 sampled = checksum(tcw, tsp, w, h, wiiu_tex_full_hash != 0);
+    const u32 sampled = checksum(tcw, tsp, w, h, false);
     bool changed = e->fresh || sampled != e->sampled_sum;
     u32 full = e->full_sum;
     if (changed || ((frame_seq + (u32)(e - cache)) & 15) == 0)

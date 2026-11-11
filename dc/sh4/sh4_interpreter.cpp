@@ -12,7 +12,6 @@
  */
 
 #include "types.h"
-#include "wiiu/prof_wiiu.h"
 
 #include "sh4_interpreter.h"
 #include "dc/sh4/rec_v2/ccall_census.h"
@@ -401,33 +400,21 @@ int FASTCALL UpdateSystem()
 // _handle_event() is behaviourally identical to a single UpdateSystem().
 // -------------------------------------------------------------------------
 #ifdef __WIIU__
-void aica_poll_ints();   // plugs/nullAICA/aica.cpp: interrupts the sound thread raised (exp_arm_thread)
-void wiiu_ta_poll();   // wiiu/render_gx2.cpp: list-end interrupts from the scanner thread (exp_scan_thread)
+void aica_poll_ints();   // plugs/nullAICA/aica.cpp: interrupts the sound thread raised
 #endif
 int FASTCALL UpdateSystem_no_event()
 {
 #ifdef __WIIU__
-	wiiu_ta_poll();
 	aica_poll_ints();
 #endif
 	CCALL(CC_TIMESLICE);
-	WIIU_PROF(PROF_TIMESLICE);
 	if (!(update_cnt & (s_medium_period - 1)))
-	{
-		WIIU_PROF(PROF_TS_MEDIUM);
 		MediumUpdate();
-	}
 
 	update_cnt++;
 
-	{
-		WIIU_PROF(PROF_TS_TMU);
-		UpdateTMU(s_timeslice);
-	}
-	{
-		WIIU_PROF(PROF_TS_PVR);
-		UpdatePvr(s_timeslice);
-	}
+	UpdateTMU(s_timeslice);
+	UpdatePvr(s_timeslice);
 	UpdateAicaDma(s_timeslice);     // deferred AICA G2-DMA completion IRQ (DMA_FIX)
 
 	// SCHED preset: advance the deadline scheduler and fire due completion/IRQ

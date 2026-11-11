@@ -1,5 +1,5 @@
 // Fastmem on Wii U: the Wii's FASTMEM (wii/wii_fastmem.cpp builds its own page table and DSI handler, which needs
-// supervisor mode) redone with what a user-mode Cafe OS app has, checked on a console by scratch/fastmem-spike:
+// supervisor mode) redone with what a user-mode Cafe OS app has, checked on a console with a test app:
 //   * a 512 MB, 512 MB-aligned block of virtual space (OSAllocVirtAddr) stands for the Dreamcast's 29-bit physical
 //     space; the JIT turns an address into window + (addr & 0x1FFFFFFF) (fm_ea in wii_driver.cpp)
 //   * the guest RAM and VRAM arrays are mapped into it with OSMapMemory at their Dreamcast offsets, mirrors included,
@@ -31,9 +31,6 @@ static const u32 WINDOW_SIZE = 0x20000000;
 static volatile int probing, probe_faulted;
 
 static u32 patched;   // sites patched after a fault since boot
-int g_exp_fm_map;
-extern VArray2 aica_ram;
-extern Array<u8> OnChipRAM;
 
 int WiiFastmem_ReserveHtab(void) { return 1; }   // no page table to reserve
 
@@ -158,21 +155,4 @@ void WiiFastmem_Init(void)
     }
     g_wii_fastmem_active = 1;
     printf("[fastmem] active: window %08x, RAM %p, VRAM %p\n", w, mem_b.data, vram.data);
-    // exp_fm_map: bit 0 sound RAM, bit 1 on-chip RAM. Each stays on its handlers if it can't be mapped.
-    if ((g_exp_fm_map & 1) && map(0x00800000, 2 * 1024 * 1024, aica_ram.data) && alias_ok(0x00800010, aica_ram.data + 0x10))
-        printf("[fastmem] sound RAM mapped\n");
-    if (g_exp_fm_map & 2)
-    {
-        // a whole 128 KB map unit for 8 KB: offsets past 0x1FFF don't mirror, which the census found no game writes
-        u8 *ocr = (u8 *)memalign(0x20000, 0x20000);
-        if (ocr)
-        {
-            memcpy(ocr, OnChipRAM.data, OnChipRAM_SIZE);
-            if (map(0x1E000000, 0x20000, ocr) && alias_ok(0x1E000010, ocr + 0x10))
-            {
-                OnChipRAM.data = ocr;
-                printf("[fastmem] on-chip RAM mapped\n");
-            }
-        }
-    }
 }

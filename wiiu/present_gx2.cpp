@@ -313,15 +313,9 @@ static float canvas_w = 640.0f, canvas_h = 480.0f;   // of the screen frame bein
 // picture and only the blits run (on the console the GX2 thread shares core 1 with the emulator)
 static bool scene_dirty;
 int wiiu_exp_trans_min = 1;
-int wiiu_exp_screen_pos;   // exp_screen_pos=1: screen positions with W = 1 and per-pixel division, as Flycast (passes the TA tests; no gain seen yet)
 static u32 u_screen_vs_loc = ~0u, u_screen_ps_loc = ~0u;
-// exp_gpu_convert (needs exp_screen_pos): vertices go to the GPU as decoded (WiiuVertex, 28 bytes) and the vertex
-// shader scales them, so the intake core copies instead of converting each one
-int wiiu_exp_gpu_convert;
-static WHBGfxShaderGroup geo_raw;   // the same shaders, fetching the decoded layout
-static float draw_screen[4];        // the committed scene's u_screen
-static inline bool raw_vertices() { return wiiu_exp_gpu_convert && wiiu_exp_screen_pos; }
-static inline u32 vertex_bytes() { return raw_vertices() ? sizeof(WiiuVertex) : sizeof(GpuVertex); }   // geo shaders' screen-mode switch (exp_screen_pos)
+static float draw_screen[4];        // the committed scene's u_screen (the geo shaders' mode word; 0: clip-space positions)
+static inline u32 vertex_bytes() { return sizeof(GpuVertex); }
 static u32 u_mode_loc, u_shade_loc, u_fog_col_loc, u_fog_vcol_loc, u_clamp_min_loc, u_clamp_max_loc, u_clamp_on_loc, tex0_loc,
     fog_table_loc;
 
@@ -354,7 +348,6 @@ struct Scene
     WiiuTexInval inv[1024];   // images decoded for this scene: their GPU copies are invalidated before drawing
     u32 n_inv;
     u32 seq, frame_seq;       // scene number (texture versions), and the emulator frame it was built from
-    u32 dl_bytes;             // exp_gx2_dl: its recorded display list (dl_buf[slot]), 0: none
     float canvas_w, canvas_h;
 };
 static Scene scenes[SLOTS], rtt_scene;
@@ -517,16 +510,6 @@ bool wiiu_gx2_init()
     WHBGfxInitShaderAttribute(&geo, "a_spc", 0, 20, GX2_ATTRIB_FORMAT_UNORM_8_8_8_8);
     WHBGfxInitShaderAttribute(&geo, "a_uv", 0, 24, GX2_ATTRIB_FORMAT_FLOAT_32_32);
     WHBGfxInitFetchShader(&geo);
-    if (WHBGfxLoadGFDShaderGroup(&geo_raw, 0, geo_gsh))
-    {
-        WHBGfxInitShaderAttribute(&geo_raw, "a_pos", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32);
-        WHBGfxInitShaderAttribute(&geo_raw, "a_col", 0, 12, GX2_ATTRIB_FORMAT_UNORM_8_8_8_8);
-        WHBGfxInitShaderAttribute(&geo_raw, "a_spc", 0, 16, GX2_ATTRIB_FORMAT_UNORM_8_8_8_8);
-        WHBGfxInitShaderAttribute(&geo_raw, "a_uv", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32);
-        WHBGfxInitFetchShader(&geo_raw);
-    }
-    else
-        wiiu_exp_gpu_convert = 0;
     for (u32 i = 0; i < geo.pixelShader->uniformVarCount; i++)
     {
         const GX2UniformVar &u = geo.pixelShader->uniformVars[i];
@@ -550,8 +533,6 @@ bool wiiu_gx2_init()
     for (u32 i = 0; i < geo.vertexShader->uniformVarCount; i++)
         if (!strcmp(geo.vertexShader->uniformVars[i].name, "u_screen"))
             u_screen_vs_loc = geo.vertexShader->uniformVars[i].offset;
-    printf("[gx2] screen-space positions %s (u_screen at %d/%d)\n", wiiu_exp_screen_pos ? "on" : "off", (int)u_screen_vs_loc,
-           (int)u_screen_ps_loc);
     for (u32 i = 0; i < geo.pixelShader->samplerVarCount; i++)
     {
         const GX2SamplerVar &v = geo.pixelShader->samplerVars[i];
@@ -716,35 +697,7 @@ static u32 scene_counter;                         // under decode_lock
 static u32 intake_taken_seq;
 static OSThread intake;
 
-// exp_sort_opaque: opaque strips grouped by texture on this core, for fewer draws and state changes on the GX2 thread.
-// Only within stretches sharing depth, shadow and cull state, so just exact depth ties can change
-int wiiu_exp_sort_opaque;
-static void sort_opaque(WiiuFrame *f)
-{
-    const auto group = [](const WiiuStrip &s) {
-        ISP_TSP isp; isp.full = s.isp;
-        PCW pcw; pcw.full = s.pcw;
-        return (u32)(isp.DepthMode | isp.ZWriteDis << 3 | pcw.Shadow << 4 | isp.CullMode << 5 | s.clip << 7);
-    };
-    for (u32 i = 0; i < f->ns; )
-    {
-        u32 end = i + 1;
-        if (f->s[i].list == 0)
-        {
-            const u32 g = group(f->s[i]);
-            while (end < f->ns && f->s[end].list == 0 && group(f->s[end]) == g)
-                end++;
-            std::stable_sort(f->s + i, f->s + end, [](const WiiuStrip &a, const WiiuStrip &b) {
-                return a.tcw != b.tcw ? a.tcw < b.tcw : a.tsp < b.tsp;
-            });
-        }
-        i = end;
-    }
-}
-
 static OSTime intake_ticks[3];   // where the intake core goes: TA decode, convert, texture lookup
-static OSTime sort_opaque_ticks;
-extern int wiiu_exp_fix_inf;
 extern OSTime wiiu_decode_ticks[3];   // render_gx2.cpp
 extern u32 wiiu_decode_blocks;
 static u32 intake_frames;
@@ -753,22 +706,8 @@ static void build_scene(const WiiuFrame *f, GpuVertex *out, u32 *idx, float w, f
     sc->seq = ++scene_counter;
     wiiu_textures_begin(sc->seq);
     const OSTime s0 = OSGetSystemTime();
-    // exp_single_pass: decode streams each strip into this scene's buffers (raw vertices only; the opaque sort
-    // reorders strips and the inf fix rewrites vertices after decode, so either turns it off)
-    extern int wiiu_exp_single_pass;
-    extern WiiuVertex *wiiu_stream_v;
-    extern u32 *wiiu_stream_i;
-    const bool stream = wiiu_exp_single_pass && raw_vertices() && !wiiu_exp_sort_opaque && !wiiu_exp_fix_inf;
-    wiiu_stream_v = stream ? (WiiuVertex *)out : nullptr;
-    wiiu_stream_i = stream ? idx : nullptr;
     wiiu_ta_decode((WiiuFrame *)f);
-    wiiu_stream_v = nullptr;
-    wiiu_stream_i = nullptr;
-    const OSTime s0b = OSGetSystemTime();
-    if (wiiu_exp_sort_opaque)
-        sort_opaque((WiiuFrame *)f);
     const OSTime s1 = OSGetSystemTime();
-    sort_opaque_ticks += s1 - s0b;
     convert_frame(f, out, idx, w, h, sc);
     const OSTime s2 = OSGetSystemTime();
     sc->n_tex = sc->n_inv = 0;
@@ -789,12 +728,6 @@ static void build_scene(const WiiuFrame *f, GpuVertex *out, u32 *idx, float w, f
     sc->canvas_h = f->canvas_h;
 }
 
-int wiiu_exp_gx2_dl;
-int wiiu_no_draw;   // test setting: scenes are built but never drawn
-static const u32 DL_SIZE = 2 * 1024 * 1024;
-static void *dl_buf[SLOTS];
-static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf, float tile_x, float tile_y);
-static void commit(const Scene *sc);
 static int intake_main(int, const char **)
 {
     for (;;)
@@ -831,22 +764,6 @@ static int intake_main(int, const char **)
             OSFastMutex_Lock(&decode_lock);
             wiiu_textures_collect(oldest);
             build_scene(f, slot_v[s], slot_i[s], f->canvas_w, f->canvas_h, sc);
-            sc->dl_bytes = 0;
-            if (wiiu_exp_gx2_dl)
-            {
-                // exp_gx2_dl: the scene's draws recorded here on core 2; the GX2 thread only plays the list
-                if (!dl_buf[s])
-                    dl_buf[s] = MEMAllocFromDefaultHeapEx(DL_SIZE, 256);
-                if (dl_buf[s])
-                {
-                    commit(sc);
-                    GX2BeginDisplayListEx(dl_buf[s], DL_SIZE, TRUE);
-                    scene_body(RT_W, RT_H, &geo_buf[s], &idx_buf[s], 32.0f * RT_W / sc->canvas_w, 32.0f * RT_H / sc->canvas_h);
-                    sc->dl_bytes = GX2EndDisplayList(dl_buf[s]);
-                    DCFlushRange(dl_buf[s], sc->dl_bytes);
-                    committed = nullptr;
-                }
-            }
             OSFastMutex_Unlock(&decode_lock);
             sc->frame_seq = seq;
             // flushed by this core (the GX2 thread's flush may not reach lines still in this core's cache)
@@ -942,8 +859,6 @@ static void adopt_scene()
     last_3d_vblank = wiiu_vblanks;
 }
 
-// exp_halfz: clip z runs 0..1, so far geometry keeps its small depths (2d-1 rounds them to the precision of 1.0)
-int wiiu_exp_halfz;
 // the frame's vertices into clip space (from w x h Dreamcast pixels) at out, its strips, volumes, translucent
 // order and fog values into the statics draw_scene uses. CPU work only, so it can run on the worker core; the
 // fog table texture is the GX2 thread's (apply_fog_table)
@@ -957,21 +872,10 @@ static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 t
         float d = invw * scale;
         if (d > 1.0f)
             d = 1.0f;
-        if (wiiu_exp_screen_pos)
-        {
-            // screen mode (geo.vert): the screen position with W = 1, and 1/W for the per-pixel division
-            out[i].x = v.x / hw - 1.0f;
-            out[i].y = 1.0f - v.y / hh;
-            out[i].z = wiiu_exp_halfz ? d : 2.0f * d - 1.0f;
-            out[i].w = invw;
-        }
-        else
-        {
-            out[i].x = (v.x / hw - 1.0f) * w;
-            out[i].y = (1.0f - v.y / hh) * w;
-            out[i].z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
-            out[i].w = w;
-        }
+        out[i].x = (v.x / hw - 1.0f) * w;
+        out[i].y = (1.0f - v.y / hh) * w;
+        out[i].z = (2.0f * d - 1.0f) * w;
+        out[i].w = w;
         out[i].col = v.col;
         out[i].spc = v.spc;
         out[i].u = v.u;
@@ -1010,58 +914,6 @@ static void start_conv_helper()
 }
 int wiiu_exp_pcw_gouraud = 1;   // exp_pcw_gouraud=0: Gouraud from the ISP word, as before
 int wiiu_exp_mv_open = 1;   // exp_mv_open=0: every volume by parity, as before
-int wiiu_exp_mv_cull;   // exp_mv_cull=1: volume triangles culled by their ISP cull mode (Flycast); unproven, off
-int wiiu_exp_fix_inf;
-u32 wiiu_bad_vertices;   // infinite or NaN vertices seen (bench RESULT)
-// A point at the camera plane (Soulcalibur's floor, 4% of a fight's vertices) has an infinite 1/w, and w = 0 times an
-// infinite x is NaN, which loses the whole triangle. The PVR takes screen coordinates and never divides. exp_fix_inf:
-// in a strip with good vertices, the bad ones move far off screen at the strip's own nearest depth (2: the frame's). A
-// strip with none
-// collapses to a point (keeping it, at any depth, painted most of the screen in scene transitions)
-static inline bool bad_xy(const WiiuVertex &v)
-{
-    return !(v.x > -1e30f && v.x < 1e30f) || !(v.y > -1e30f && v.y < 1e30f);
-}
-static inline bool bad_z(const WiiuVertex &v) { return !(v.z < 3e38f); }   // infinite or NaN: w would be 0
-static void fix_inf_vertices(WiiuFrame *f)
-{
-    for (u32 n = 0; n < f->ns; n++)
-    {
-        const WiiuStrip &st = f->s[n];
-        float near = 0.0f;
-        u32 bad = 0, lost = 0;   // any problem; no usable position
-        for (u32 k = 0; k < st.count; k++)
-        {
-            const WiiuVertex &v = f->v[st.first + k];
-            if (bad_xy(v))
-                lost++;
-            if (bad_xy(v) || bad_z(v))
-                bad++;
-            else if (v.z > near)
-                near = v.z;
-        }
-        wiiu_bad_vertices += bad;
-        if (!bad || !wiiu_exp_fix_inf)
-            continue;
-        const float depth = wiiu_exp_fix_inf == 2 && f->max_invw > 0.0f ? f->max_invw : near > 0.0f ? near : 1.0f;
-        for (u32 k = 0; k < st.count; k++)
-        {
-            WiiuVertex &v = f->v[st.first + k];
-            if (lost == st.count)
-            {
-                v.x = v.y = 0.0f;
-                v.z = 1.0f;
-            }
-            else if (bad_xy(v) || bad_z(v))
-            {
-                // a screen position that's fine stays (2D menus can carry extreme depths)
-                v.x = v.x > 1e6f ? 1e6f : v.x < -1e6f ? -1e6f : v.x == v.x ? v.x : 0.0f;
-                v.y = v.y > 1e6f ? 1e6f : v.y < -1e6f ? -1e6f : v.y == v.y ? v.y : 0.0f;
-                v.z = depth;
-            }
-        }
-    }
-}
 // inside convert_frame: infinite-vertex fixes, this core's vertex half, waiting for the helper's half, modifier volumes
 // and copies, the index lists, the translucent sort; and the vertices, strips and indices it handled
 static OSTime conv_ticks[6];
@@ -1074,31 +926,21 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     const auto lap = [&](int k) { c1 = OSGetSystemTime(); conv_ticks[k] += c1 - c0; c0 = c1; };
     conv_vertices += f->nv;
     conv_strips += f->ns;
-    if (wiiu_exp_fix_inf)   // off: not even a counting pass over every vertex (3.5 ms a DOA2 frame on a console)
-        fix_inf_vertices((WiiuFrame *)f);
     lap(0);
     // exp_split_convert: this is the intake core's biggest stage (7 of 13.8 ms in a Soulcalibur fight, console), and each
     // vertex stands alone, so the helper core takes the second half
-    const bool raw = raw_vertices();
-    sc->screen[0] = raw ? (wiiu_exp_halfz ? 3.0f : 2.0f) : wiiu_exp_screen_pos ? 1.0f : 0.0f;
+    sc->screen[0] = 0.0f;
     sc->screen[1] = 1.0f / hw;
     sc->screen[2] = 1.0f / hh;
     sc->screen[3] = scale;
-    WiiuVertex *rout = (WiiuVertex *)out;
-    // exp_single_pass: decode already put these strips' vertices and indices in out and idx
-    const bool streamed = raw && f->streamed_v == out && f->streamed_i == idx;
-    const u32 vdone = streamed ? f->streamed_nv : 0, sdone = streamed ? f->streamed_ns : 0;
     u32 first_half = f->nv;
-    if (raw)
-        memcpy(rout + vdone, f->v + vdone, (f->nv - vdone) * sizeof(WiiuVertex));
-    else if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
+    if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
     {
         first_half = f->nv / 2 & ~31u;
         conv_job = { f, out, first_half, f->nv, hw, hh, scale };
         OSSignalEvent(&conv_go);
     }
-    if (!raw)
-        convert_vertices(f, out, 0, first_half, hw, hh, scale);
+    convert_vertices(f, out, 0, first_half, hw, hh, scale);
     lap(1);
     if (first_half != f->nv)
         OSWaitEvent(&conv_done);
@@ -1108,31 +950,16 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     for (u32 i = 0; i < f->n_mv_tris * 3; i++)
     {
         const WiiuMvVertex &v = f->mv[i];
-        if (raw)
-        {
-            rout[sc->mv_base + i] = { v.x, v.y, v.z, 0, 0, 0.0f, 0.0f };
-            continue;
-        }
         float invw = v.z > 1e-7f ? v.z : 1e-7f;
         float w = 1.0f / invw;
         float d = invw * scale;
         if (d > 1.0f)
             d = 1.0f;
         GpuVertex &o = out[sc->mv_base + i];
-        if (wiiu_exp_screen_pos)
-        {
-            o.x = v.x / hw - 1.0f;
-            o.y = 1.0f - v.y / hh;
-            o.z = wiiu_exp_halfz ? d : 2.0f * d - 1.0f;
-            o.w = invw;
-        }
-        else
-        {
-            o.x = (v.x / hw - 1.0f) * w;
-            o.y = (1.0f - v.y / hh) * w;
-            o.z = (wiiu_exp_halfz ? d : 2.0f * d - 1.0f) * w;
-            o.w = w;
-        }
+        o.x = (v.x / hw - 1.0f) * w;
+        o.y = (1.0f - v.y / hh) * w;
+        o.z = (2.0f * d - 1.0f) * w;
+        o.w = w;
         o.col = o.spc = 0;
         o.u = o.v = 0.0f;
     }
@@ -1140,10 +967,8 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     // shading inside volumes multiplies by the intensity: black drawn over with alpha 1 - intensity
     sc->shad_scale = f->fpu_shad_scale;
     static const float corners[4][2] = { { -1, 1 }, { -1, -1 }, { 1, 1 }, { 1, -1 } };
-    for (u32 i = 0; i < 4 && raw; i++)
-        rout[sc->quad_base + i] = { (corners[i][0] + 1.0f) * hw, (1.0f - corners[i][1]) * hh, 0.0f, 255u - (sc->shad_scale & 0xFF), 0, 0.0f, 0.0f };
-    for (u32 i = 0; i < 4 && !raw; i++)
-        out[sc->quad_base + i] = { corners[i][0], corners[i][1], wiiu_exp_halfz ? 0.0f : -1.0f, 1.0f, 255u - (sc->shad_scale & 0xFF), 0, 0.0f, 0.0f };
+    for (u32 i = 0; i < 4; i++)
+        out[sc->quad_base + i] = { corners[i][0], corners[i][1], -1.0f, 1.0f, 255u - (sc->shad_scale & 0xFF), 0, 0.0f, 0.0f };
     sc->modvol_count = f->n_mp;
     memcpy(sc->modvols, f->mp, f->n_mp * sizeof(WiiuModVol));
     sc->strip_count = f->ns;
@@ -1153,12 +978,7 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     lap(3);
     u32 ni = 0;
     sc->idx_owner = (u32)(uintptr_t)idx;
-    for (u32 i = 0; i < sdone; i++)
-    {
-        sc->strip_idx[i] = ni;
-        ni += (f->s[i].count - 2) * 3;
-    }
-    for (u32 i = sdone; i < f->ns; i++)
+    for (u32 i = 0; i < f->ns; i++)
     {
         const u32 first = f->s[i].first, tris = f->s[i].count - 2;
         sc->strip_idx[i] = ni;
@@ -1183,12 +1003,6 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         const WiiuStrip &st = f->s[i];
         if (st.list != 2)
             continue;
-        if (i < sdone)
-        {
-            trans_key[i] = st.zkey;
-            sc->trans_order[sc->trans_count++] = i;
-            continue;
-        }
         float sum = 0.0f, lo = 1e30f;
         for (u32 k = 0; k < st.count; k++)
         {
@@ -1314,8 +1128,7 @@ static void draw_modvols()
         if (m.count)
         {
             // the volume's own cull mode, as Flycast: volumes may leave out the faces culling would drop
-            const u32 cull = wiiu_exp_mv_cull ? m.cull : 0;
-            GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, cull == 2, cull == 3);
+            GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
             // GREATER passes where the volume surface is in front of the scene. A closed volume flips bit 0x01 (an odd
             // count of faces in front: inside); an open one or a quad (PCW Volume bit clear on a header with a mode) sets
             // it wherever any face is in front, as Flycast does. Parity on Soulcalibur's open shadow volumes tore them
@@ -1369,18 +1182,15 @@ static void scene_setup(GX2ColorBuffer *color, GX2DepthBuffer *depth, u32 width,
 // all of a scene's state and draws: from the GX2 thread, or recorded into a display list on the intake thread
 static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf, float tile_x, float tile_y)
 {
-    if (wiiu_exp_halfz)
-        GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
     GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
-    const bool raw = draw_screen[0] > 1.5f;
-    GX2SetFetchShader(raw ? &geo_raw.fetchShader : &geo.fetchShader);
+    GX2SetFetchShader(&geo.fetchShader);
     GX2SetVertexShader(geo.vertexShader);
     GX2SetPixelShader(geo.pixelShader);
     if (u_screen_vs_loc != ~0u)
         GX2SetVertexUniformReg(u_screen_vs_loc, 4, (u32 *)draw_screen);
     if (u_screen_ps_loc != ~0u)
         GX2SetPixelUniformReg(u_screen_ps_loc, 4, (u32 *)draw_screen);
-    GX2RSetAttributeBuffer(vbuf, 0, raw ? sizeof(WiiuVertex) : sizeof(GpuVertex), 0);
+    GX2RSetAttributeBuffer(vbuf, 0, sizeof(GpuVertex), 0);
     GX2SetPixelTexture(&tex, tex0_loc);
     GX2SetPixelSampler(&sampler, tex0_loc);
     GX2SetPixelTexture(&fog_tex, fog_table_loc);
@@ -1625,8 +1435,6 @@ static void scene_end(GX2ColorBuffer *color)
 static void draw_scene(GX2ColorBuffer *color, GX2DepthBuffer *depth, u32 width, u32 height, GX2RBuffer *vbuf,
                        GX2RBuffer *ibuf, float tile_x, float tile_y)
 {
-    if (wiiu_no_draw)
-        return;
     scene_setup(color, depth, width, height);
     scene_body(width, height, vbuf, ibuf, tile_x, tile_y);
     scene_end(color);
@@ -1790,7 +1598,7 @@ static void blit(GX2Texture *t)
 // where the GX2 thread's time goes (on the console it shares core 1 with the emulator), reported every 5 s
 static struct
 {
-    OSTime start, rtt, convert, draw, present, finish, flip, gpu_scene;
+    OSTime start, rtt, convert, draw, present, finish, flip;
     u32 vsyncs, new_frames, renders_at_start;
 } perf;
 
@@ -1811,13 +1619,13 @@ static void perf_report()
     printf("[gx2] perf %.1f s: %u vsyncs, %u new 3D frames, emulator %.1f renders/s; GX2 thread CPU %.1f ms/s (rtt %.1f, "
            "convert %.1f, draw %.1f incl. textures %.1f, blits %.1f), waiting for the GPU %.1f ms/s; %u strips in %u draws "
            "(runs ended by clip %u, texture %u, sampler %u, depth %u, cull %u, blend %u, mode %u, shade %u, clamp %u, gap %u); "
-           "flip wait %.1f ms/s, GPU for 3D scenes %.1f ms/s\n",
+           "flip wait %.1f ms/s\n",
            (float)OSTicksToMilliseconds(span) / 1000.0f, perf.vsyncs, perf.new_frames,
            (wiiu_renders - perf.renders_at_start) * 1000.0f / OSTicksToMilliseconds(span),
            ms_per_s(perf.rtt + perf.convert + perf.draw + perf.present), ms_per_s(perf.rtt), ms_per_s(perf.convert),
            ms_per_s(perf.draw), ms_per_s(texture_decode_ticks), ms_per_s(perf.present), ms_per_s(perf.finish), draw_strips,
            draw_calls, run_breaks[0], run_breaks[1], run_breaks[2], run_breaks[3], run_breaks[4], run_breaks[5],
-           run_breaks[6], run_breaks[7], run_breaks[8], run_breaks[9], ms_per_s(perf.flip), ms_per_s(perf.gpu_scene));
+           run_breaks[6], run_breaks[7], run_breaks[8], run_breaks[9], ms_per_s(perf.flip));
     draw_strips = draw_calls = 0;
     memset(run_breaks, 0, sizeof(run_breaks));
     perf = {};
@@ -1831,16 +1639,15 @@ static void perf_report()
                OSTicksToMicroseconds(intake_ticks[0]) * ms, OSTicksToMicroseconds(intake_ticks[1]) * ms,
                OSTicksToMicroseconds(intake_ticks[2]) * ms, intake_frames);
         const auto us = [&](OSTime t) { return OSTicksToMicroseconds(t) * ms; };
-        printf("[gx2] intake detail per frame: decode = TA loop %.2f + depth pass %.2f + rest %.2f + opaque sort %.2f ms; "
-               "convert = inf fix %.2f + vertices %.2f + helper wait %.2f + volumes/copies %.2f + indices %.2f + "
+        printf("[gx2] intake detail per frame: decode = TA loop %.2f + depth pass %.2f + rest %.2f ms; "
+               "convert = setup %.2f + vertices %.2f + helper wait %.2f + volumes/copies %.2f + indices %.2f + "
                "translucent sort %.2f ms; %u blocks, %u vertices, %u strips, %u indices\n",
-               us(wiiu_decode_ticks[0]), us(wiiu_decode_ticks[1]), us(wiiu_decode_ticks[2]), us(sort_opaque_ticks),
+               us(wiiu_decode_ticks[0]), us(wiiu_decode_ticks[1]), us(wiiu_decode_ticks[2]),
                us(conv_ticks[0]), us(conv_ticks[1]), us(conv_ticks[2]), us(conv_ticks[3]), us(conv_ticks[4]),
                us(conv_ticks[5]), wiiu_decode_blocks / intake_frames, conv_vertices / intake_frames,
                conv_strips / intake_frames, conv_indices / intake_frames);
         memset(wiiu_decode_ticks, 0, sizeof(wiiu_decode_ticks));
         memset(conv_ticks, 0, sizeof(conv_ticks));
-        sort_opaque_ticks = 0;
         wiiu_decode_blocks = conv_vertices = conv_strips = conv_indices = 0;
         intake_ticks[0] = intake_ticks[1] = intake_ticks[2] = 0;
         intake_frames = 0;
@@ -1848,14 +1655,9 @@ static void perf_report()
 }
 
 // what the GX2 thread is doing, for the watchdog in main_wiiu.cpp (which can still report when this thread hangs)
-int wiiu_gpu_timing;        // gpu_timing=1 in wiiu.cfg
-// gx2_pipeline: no longer used (scenes are built as frames are published, see intake_main); kept so old
-// wiiu.cfg files still parse
-int wiiu_gx2_pipeline = 0;
 volatile const char *wiiu_gx2_stage = "init";
 volatile u32 wiiu_gx2_frames_done;
 
-static void batch_check();
 
 void wiiu_gx2_frame()
 {
@@ -1901,25 +1703,10 @@ void wiiu_gx2_frame()
     if (show_3d && scene_dirty)
     {
         wiiu_gx2_stage = "draw 3D scene";
-        if (scenes[geo_cur].dl_bytes)
-        {
-            scene_setup(&rt_color, &rt_depth, RT_W, RT_H);
-            GX2CallDisplayList(dl_buf[geo_cur], scenes[geo_cur].dl_bytes);
-            scene_end(&rt_color);
-        }
-        else
         {
             commit(&scenes[geo_cur]);
             draw_scene(&rt_color, &rt_depth, RT_W, RT_H, &geo_buf[geo_cur], &idx_buf[geo_cur], 32.0f * RT_W / canvas_w,
                        32.0f * RT_H / canvas_h);
-            batch_check();
-        }
-        if (wiiu_gpu_timing)
-        {
-            // test setting: the GPU's time for the scene alone (the GPU is idle here: the last frame was waited for)
-            const OSTime tg = OSGetSystemTime();
-            GX2DrawDone();
-            perf.gpu_scene += OSGetSystemTime() - tg;
         }
         scene_dirty = false;
     }
@@ -1945,109 +1732,6 @@ void wiiu_gx2_frame()
     perf.finish += OSGetSystemTime() - t1;
     wiiu_gx2_stage = "main loop";
     wiiu_gx2_frames_done++;
-}
-
-// gx2_batch_check=1: every 60th drawn frame, render the scene off-screen with and without batching and log any
-// pixel that differs (MvC2's sprites glitched with batching on a console; the drawing itself is deterministic)
-int wiiu_gx2_batch_check;
-static void batch_check()
-{
-    static u32 n;
-    if (!wiiu_gx2_batch_check || ++n % 60)
-        return;
-    const u32 w = canvas_w < RTT_MAX ? (u32)canvas_w : RTT_MAX, h = canvas_h < RTT_MAX ? (u32)canvas_h : RTT_MAX;
-    static std::vector<u32> a;
-    const int saved = wiiu_gx2_batch;
-    u32 diff = 0, fx = 0, fy = 0, va = 0, vb = 0, draws[2] = {};
-    for (int pass = 0; pass < 2; pass++)
-    {
-        wiiu_gx2_batch = pass == 0;
-        const u32 before = draw_calls;
-        draw_scene(&rtt_color, &rtt_depth, w, h, &geo_buf[geo_cur], &idx_buf[geo_cur], 32.0f, 32.0f);
-        draws[pass] = draw_calls - before;
-        GX2DrawDone();
-        DCInvalidateRange(rtt_color.surface.image, rtt_color.surface.imageSize);
-        const u32 *px = (const u32 *)rtt_color.surface.image, pitch = rtt_color.surface.pitch;
-        if (pass == 0)
-        {
-            a.resize(w * h);
-            for (u32 y = 0; y < h; y++)
-                memcpy(&a[y * w], &px[y * pitch], w * 4);
-        }
-        else
-            for (u32 y = 0; y < h; y++)
-                for (u32 x = 0; x < w; x++)
-                    if (px[y * pitch + x] != a[y * w + x] && diff++ == 0)
-                    {
-                        fx = x;
-                        fy = y;
-                        va = a[y * w + x];
-                        vb = px[y * pitch + x];
-                    }
-    }
-    wiiu_gx2_batch = saved;
-    printf("[batch-check] frame %u (%ux%u): %u pixels differ (%u draws batched, %u not)%s", drawn_frame_seq, w, h, diff,
-           draws[0], draws[1], diff ? "" : "\n");
-    if (diff)
-        printf("; first at %u,%u: %08x batched, %08x not\n", fx, fy, va, vb);
-}
-
-// one-off check of what the screen shows: the current 3D frame rendered again at Dreamcast resolution into the
-// linear target (or the scanned-out framebuffer), averaged down to 80x60 and printed as hex rows
-// ("[thumb] row chunk RRGGBB..."), so a console run can be compared with the same test in Cemu
-void wiiu_gx2_thumbnail()
-{
-    if (!gx2_ready)
-        return;
-    const bool show_3d = have_3d && wiiu_vblanks - last_3d_vblank < 60;
-    const u8 *src;
-    u32 w, h, pitch;
-    if (show_3d)
-    {
-        w = canvas_w < RTT_MAX ? (u32)canvas_w : RTT_MAX;
-        h = canvas_h < RTT_MAX ? (u32)canvas_h : RTT_MAX;
-        worker_wait();   // a conversion in flight writes the other scene; the drawn one is safe, the cache isn't
-        commit(&scenes[geo_cur]);
-        draw_scene(&rtt_color, &rtt_depth, w, h, &geo_buf[geo_cur], &idx_buf[geo_cur], 32.0f, 32.0f);
-        GX2DrawDone();
-        DCInvalidateRange(rtt_color.surface.image, rtt_color.surface.imageSize);
-        src = (const u8 *)rtt_color.surface.image;
-        pitch = rtt_color.surface.pitch * 4;
-    }
-    else
-    {
-        OSFastMutex_Lock(&shared_lock);
-        w = shared_w;
-        h = shared_h;
-        src = (const u8 *)shared_rgba;
-        pitch = FB_MAX_W * 4;
-    }
-    printf("[thumb] %s %ux%u -> 80x60\n", show_3d ? "3D" : "framebuffer", w, h);
-    static const char hex[] = "0123456789abcdef";
-    for (u32 ty = 0; ty < 60 && w && h; ty++)
-    {
-        char line[80 * 6];
-        for (u32 tx = 0; tx < 80; tx++)
-        {
-            const u32 x0 = tx * w / 80, x1 = (tx + 1) * w / 80, y0 = ty * h / 60, y1 = (ty + 1) * h / 60;
-            u32 sum[3] = {}, n = 0;
-            for (u32 y = y0; y < y1; y++)
-                for (u32 x = x0; x < x1; x++, n++)
-                    for (u32 c = 0; c < 3; c++)
-                        sum[c] += src[y * pitch + x * 4 + c];
-            for (u32 c = 0; c < 3; c++)
-            {
-                const u32 v = n ? sum[c] / n : 0;
-                line[tx * 6 + c * 2] = hex[v >> 4];
-                line[tx * 6 + c * 2 + 1] = hex[v & 15];
-            }
-        }
-        // in four 20-pixel chunks: long log lines get cut (Cemu's OSReport keeps about 270 characters)
-        for (u32 k = 0; k < 4; k++)
-            printf("[thumb] %02u %u %.120s\n", ty, k, line + k * 120);
-    }
-    if (!show_3d)
-        OSFastMutex_Unlock(&shared_lock);
 }
 
 extern bool wiiu_gfx_down;   // main_wiiu.cpp

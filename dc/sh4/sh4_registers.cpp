@@ -93,18 +93,11 @@ void SetFloatStatusReg()
 	}
 }
 //called when fpscr is changed and we must check for reg banks ect..
-#ifdef __WIIU__
-u32 g_fpscr_bank_swaps;
-#endif
 void UpdateFPSCR()
 {
 	CCALL(CC_SYNC_FPSCR);
 	if (fpscr.FR !=old_fpscr.FR)
 	{
-#ifdef __WIIU__
-		extern u32 g_fpscr_bank_swaps;   // census: syncs that really swap the FPU banks
-		g_fpscr_bank_swaps++;
-#endif
 		ChangeFP();//fpu bank change
 	}
 	old_fpscr=fpscr;

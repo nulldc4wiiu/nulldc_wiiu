@@ -11,24 +11,9 @@
 // ---------------------------------------------------------------------------
 
 #include "_vmem.h"
-#include "wiiu/prof_wiiu.h"
-#ifdef __WIIU__
-// who called the generic write (JIT code or which C function), for the boot-ROM write dump (wiiu/debug_wiiu.cpp)
-void *wiiu_last_writer;
-#define WIIU_NOTE_WRITER() (wiiu_last_writer = __builtin_return_address(0))
-#else
-#define WIIU_NOTE_WRITER() do { } while (0)
-#endif
 #include "dc/aica/aica_if.h"
 #include "dc/pvr/pvr_if.h"
 #include "sh4_mem.h"
-#ifdef __WIIU__
-extern int wiiu_ram_mem1;   // main_wiiu.cpp
-extern "C" void *GfxHeapAllocMEM1(uint32_t size, uint32_t alignment);   // libwhb
-extern "C" void GfxHeapFreeMEM1(void *block);
-#include <coreinit/thread.h>
-#include <coreinit/time.h>
-#endif
 #include "dc/sh4/rec_v2/ccall_census.h"
 
 // ---------------------------------------------------------------------------
@@ -236,21 +221,15 @@ u8* fastcall _vmem_GetBlockPtr(u32 Address, u32 size)
 // ---------------------------------------------------------------------------
 // Public read/write accessors
 // ---------------------------------------------------------------------------
-u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u8> (addr); }
-u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u16>(addr); }
-u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u32>(addr); }
-u64 fastcall _vmem_ReadMem64 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); WIIU_PROF(PROF_READMEM); return _vmem_readt<u64>(addr); }
+u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u8> (addr); }
+u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u16>(addr); }
+u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u32>(addr); }
+u64 fastcall _vmem_ReadMem64 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u64>(addr); }
 
-#ifdef WIIU_INSTRUMENT
-u32 g_wr_census_on, g_wr_area[4096];   // wr_census=1: slow-path writes per MB
-#define WR_CENSUS(addr) do { if (g_wr_census_on) g_wr_area[(addr) >> 20]++; } while (0)
-#else
-#define WR_CENSUS(addr) do { } while (0)
-#endif
-void fastcall _vmem_WriteMem8  (u32 addr, u8  data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u8> (addr, data); }
-void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u16>(addr, data); }
-void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u32>(addr, data); }
-void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { WR_CENSUS(addr); CCALL_MEM(CC_WRITEMEM, 1, addr); WIIU_PROF(PROF_WRITEMEM); WIIU_NOTE_WRITER(); _vmem_writet<u64>(addr, data); }
+void fastcall _vmem_WriteMem8  (u32 addr, u8  data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u8> (addr, data); }
+void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u16>(addr, data); }
+void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u32>(addr, data); }
+void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u64>(addr, data); }
 
 // ---------------------------------------------------------------------------
 // Default "not mapped" handlers
@@ -687,32 +666,6 @@ bool _vmem_reserve()
     mem_b.size = RAM_SIZE;
     mem_b.data = ram_alloc;
     ram_alloc += RAM_SIZE;
-#ifdef __WIIU__
-    {
-        // test setting ram_mem1=1 (needs fastmem=0; no HOME): Dreamcast RAM in MEM1, whose cache misses cost 79 ns
-        // instead of MEM2's 141 (memlat, console). WHB's graphics heap owns MEM1, so it comes from there
-        if (wiiu_ram_mem1)
-        {
-            // the graphics thread may still be creating the heap
-            u8 *m1 = nullptr;
-            for (int i = 0; i < 60 && !(m1 = (u8 *)GfxHeapAllocMEM1(RAM_SIZE, 4096)); i++)
-            {
-                if (i == 0)
-                    for (u32 mb = 14; mb >= 2; mb -= 4)
-                        if (void *p = GfxHeapAllocMEM1(mb << 20, 64))
-                        {
-                            printf("[vmem] MEM1 probe: %u MB fits\n", mb);
-                            GfxHeapFreeMEM1(p);
-                            break;
-                        }
-                OSSleepTicks(OSMillisecondsToTicks(50));
-            }
-            printf("[vmem] RAM in MEM1: %p\n", m1);
-            if (m1)
-                mem_b.data = m1;
-        }
-    }
-#endif
 
     return true;
 }

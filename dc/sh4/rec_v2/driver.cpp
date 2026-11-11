@@ -355,14 +355,8 @@ static bool DoCheck(u32 pc, u32 len)
 //   but continue — giving time for blocks that are rarely re-used to be
 //   displaced naturally before forcing a full eviction.
 // ============================================================================
-#ifdef WIIU_INSTRUMENT
-extern u32 g_cnt_compile;
-#endif
 DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 {
-#ifdef WIIU_INSTRUMENT
-	g_cnt_compile++;
-#endif
 #if HOST_OS == OS_WII
 	// Update high-water mark
 	if (LastAddr > cache_high_water_mark)
@@ -470,23 +464,9 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 
 u32 rdv_FailedToFindBlock_pc;
 
-#ifdef __WIIU__
-// blocks left to log as they're compiled (set by ccn.cpp when a game turns the I-cache off for a soft reset)
-u32 wiiu_compile_trace;
-#endif
 
 DynarecCodeEntry* rdv_CompilePC()
 {
-#ifdef __WIIU__
-	if (wiiu_compile_trace)
-	{
-		wiiu_compile_trace--;
-		printf("[jit-trace] %08X r0 %08X r4 %08X r14 %08X r15 %08X pr %08X:", next_pc, r[0], r[4], r[14], r[15], pr);
-		for (int k = 0; k < 8; k++)
-			printf(" %04X", ReadMem16((next_pc & ~1u) + k * 2));
-		printf("\n");
-	}
-#endif
 	// FRAME_PROF: decode + analyse + ngen_Compile, plus any cache clear this
 	// call forces. Bracketed here rather than at the three call sites so that
 	// nothing can reach the compiler unmeasured.

@@ -12,7 +12,6 @@
 #include "dc/mem/sh4_mem.h"           // mem_b
 #include "dc/pvr/pvr_if.h"            // vram
 #include "dc/sh4/rec_v2/ccall_census.h"
-#include "prof_wiiu.h"
 #include <coreinit/atomic.h>
 #include <coreinit/fastmutex.h>
 #include <coreinit/thread.h>
@@ -41,9 +40,6 @@ static WiiuFrame *dec;                  // worker (wiiu_ta_decode): the frame Fr
 // the TA scanner (below): what FrameDecoder will make of the frame, counted as it arrives: StartRender times the render-done interrupt
 // by them (the decoded counts aren't known until the worker runs)
 static u32 scan_vertices, scan_strips;
-static u32 scan_pos;   // exp_scan_thread: blocks of the frame being built already scanned
-static void scan_sync_lock();
-static void scan_unlock();
 
 // ---- colour conversion: everything ends up as bytes R, G, B, A in memory --------------------------------
 
@@ -55,56 +51,7 @@ static inline u32 from_float(float a, float r, float g, float b) { return rgba_b
 // 16-bit UVs are the top half of a float
 static inline float uv16(u16 v) { union { u32 u; float f; } x = { (u32)v << 16 }; return x.f; }
 
-// exp_single_pass (with raw vertices): where decode streams each closed strip (build_scene sets these)
-int wiiu_exp_single_pass;
-WiiuVertex *wiiu_stream_v;
-u32 *wiiu_stream_i;
 extern int wiiu_exp_trans_min;   // present_gx2.cpp
-// copy whole vertices to the GPU buffer; destination cache lines wholly inside are zeroed first (dcbz) so they're
-// never read from memory just to be overwritten
-static inline void stream_copy(void *dst, const void *src, u32 bytes)
-{
-    u8 *d = (u8 *)dst;
-    u8 *line = (u8 *)(((uintptr_t)d + 31) & ~31u), *end = (u8 *)(((uintptr_t)d + bytes) & ~31u);
-    for (; line < end; line += 32)
-        asm volatile("dcbz 0,%0" : : "r"(line) : "memory");
-    memcpy(d, src, bytes);
-}
-static void stream_strip(WiiuStrip &st)
-{
-    // the strip's vertices are still in this core's cache: depth range, sort key, GPU copy and indices in one go
-    const WiiuVertex *v = &dec->v[st.first];
-    float hi = 0.0f, lo = 1e30f, sum = 0.0f;
-    for (u32 k = 0; k < st.count; k++)
-    {
-        const float z = v[k].z;
-        if (z > hi && z < 1e30f)
-            hi = z;
-        lo = z < lo ? z : lo;
-        sum += z;
-    }
-    if (hi > dec->max_drawn)
-        dec->max_drawn = hi;
-    st.zkey = wiiu_exp_trans_min ? lo : sum / st.count;
-    // vertices of dropped short strips between strips are copied too, so the copy stays one contiguous run
-    const u32 from = dec->streamed_nv, to = st.first + st.count;
-    if (to > from)
-        stream_copy(&wiiu_stream_v[from], &dec->v[from], (to - from) * sizeof(WiiuVertex));
-    dec->streamed_nv = to;
-    const u32 tris = st.count - 2;
-    u32 *idx = &wiiu_stream_i[dec->streamed_ni];
-    u8 *line = (u8 *)(((uintptr_t)idx + 31) & ~31u), *end = (u8 *)(((uintptr_t)(idx + tris * 3)) & ~31u);
-    for (; line < end; line += 32)
-        asm volatile("dcbz 0,%0" : : "r"(line) : "memory");
-    for (u32 k = 0; k < tris; k++)
-    {
-        idx[k * 3] = st.first + k + (k & 1);
-        idx[k * 3 + 1] = st.first + k + 1 - (k & 1);
-        idx[k * 3 + 2] = st.first + k + 2;
-    }
-    dec->streamed_ni += tris * 3;
-    dec->streamed_ns++;
-}
 
 struct FrameDecoder
 {
@@ -166,8 +113,6 @@ struct FrameDecoder
         if (cur.count >= 3 && dec->ns < WIIU_MAX_STRIPS)
         {
             dec->s[dec->ns++] = cur;
-            if (wiiu_stream_v)
-                stream_strip(dec->s[dec->ns - 1]);
         }
         else if (cur.count >= 3)
             wiiu_dropped_strips++;
@@ -342,8 +287,6 @@ struct FrameDecoder
         }
         cur.count = 4;
         dec->s[dec->ns++] = cur;
-        if (wiiu_stream_v)
-            stream_strip(dec->s[dec->ns - 1]);
     }
 };
 
@@ -501,30 +444,23 @@ static void add_background()
 }
 
 bool InitRenderer() { printf("[wiiu] GX2 renderer\n"); return TileAccel.Init(); }
-static void scan_stop_thread();
 void TermRenderer()
 {
-    scan_stop_thread();
     TileAccel.Term();
 }
 void ResetRenderer(bool Manual) { TileAccel.Reset(Manual); }
 bool ThreadStart() { return true; }
 void ThreadEnd() {}
-extern u32 wiiu_bench_last;
-void wiiu_bench_vblank();   // main_wiiu.cpp
 void wiiu_emu_safe_point();
 void VBlank()
 {
     wiiu_vblanks++;
     wiiu_fb_capture();
     wiiu_emu_safe_point();
-    if (wiiu_bench_last)
-        wiiu_bench_vblank();
 }
 // the game asked the PVR to render what the TA collected: hand the frame to the GX2 thread
 void StartRender()
 {
-    scan_sync_lock();
     wiiu_renders++;
     // render-done timing, as gxRend.cpp schedules it for each render_delay preset
     // as the scanner counted them: the geometry itself is decoded later, on the worker
@@ -576,8 +512,6 @@ void StartRender()
     build = wiiu_frame_publish(build, frames);
     build->n_ta = build->n_ta_ev = 0;   // the next render's input starts here
     scan_vertices = scan_strips = 0;
-    scan_pos = 0;
-    scan_unlock();
 }
 void EndRender() {}
 // ---- emulator thread: TA input ----------------------------------------------------------------------------
@@ -592,129 +526,8 @@ static bool scan_sprite;               // vertices are sprites (4 corners each)
 u32 wiiu_dropped_ta_blocks;   // TA input that didn't fit a frame (WIIU_MAX_TA_BLOCKS), for the log
 u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // how the game feeds the TA (status line): store queue vs DMA
 
-// exp_scan_thread (experiment, wiiu.cfg): the scanner runs on core 0; the emulator thread only copies blocks. The thread
-// scans what has arrived in batches under scan_lock; at every ordering point (list init/cont, soft reset, render) the
-// emulator takes the lock and finishes the scan itself, so nothing is scanned out of order. List-end interrupts go
-// through ta_irq_count, which the emulator drains each timeslice (wiiu_ta_poll).
-// exp_dma_async (needs exp_scan_thread): a ch2 DMA to the TA only queues its source; the scanner thread copies it too.
-// The DMA-done interrupt doesn't wait, so a game reusing the buffer at once would send stale data.
-int g_exp_scan_thread, g_exp_dma_async, g_exp_sq_fast;
-// exp_sq_lazy (without the scan thread): store queue and DMA blocks are only copied; the emulator thread scans
-// what arrived each timeslice (wiiu_ta_poll) and at every ordering point, so a list-end interrupt is raised up to
-// a timeslice later than its block. exp_sq_words: the store queue copy as eight words, the size the game's own
-// stores wrote them in, not four doubles (a test: the doubles' first loads are the path's hottest samples)
-int g_exp_sq_lazy, g_exp_sq_words;
-static const u32 DMA_QUEUE = 256;
-static struct { const u32 *data; u32 blocks; } dma_queue[DMA_QUEUE];
-static volatile u32 dma_w, dma_r;
-static bool scan_threaded;
-static volatile bool scan_stop;
-static OSFastMutex scan_lock;
-static OSThread scan_thread;
-// list ends: the scanner counts, the emulator compares (OSOrAtomic does nothing in Cemu)
-static volatile u32 ta_irq_count[5];
-static u32 ta_irq_seen[5];
+int g_exp_sq_fast;
 static void scan_block(const u32 *b);
-static void scan_upto(u32 n);
-void wiiu_ta_poll()
-{
-    if (!scan_threaded)
-    {
-        if (g_exp_sq_lazy)
-            scan_upto(build->n_ta);
-        return;
-    }
-    for (u32 l = 0; l < 5; l++)
-        if (ta_irq_seen[l] != ta_irq_count[l])
-        {
-            ta_irq_seen[l] = ta_irq_count[l];
-            spg_SchedListEndIrq(l);
-        }
-}
-static void scan_upto(u32 n)
-{
-    for (; scan_pos < n; scan_pos++)
-        scan_block(build->ta[scan_pos]);
-}
-// copy up to `max` queued DMA blocks into the frame (under scan_lock)
-static void dma_copy(u32 max)
-{
-    while (dma_r != dma_w && max)
-    {
-        auto &q = dma_queue[dma_r % DMA_QUEUE];
-        const u32 n = q.blocks < max ? q.blocks : max;
-        for (u32 i = 0; i < n; i++, q.data += 8)
-        {
-            if (build->n_ta >= WIIU_MAX_TA_BLOCKS)
-            {
-                wiiu_dropped_ta_blocks++;
-                continue;
-            }
-            u32 *d = build->ta[build->n_ta++];
-            __asm__ volatile("dcbz 0,%0" : : "r"(d) : "memory");
-            for (int k = 0; k < 8; k++)
-                d[k] = q.data[k];
-        }
-        q.blocks -= n;
-        max -= n;
-        if (!q.blocks)
-            dma_r = dma_r + 1;
-    }
-}
-static int scan_main(int argc, const char **argv)
-{
-    while (!scan_stop)
-    {
-        OSFastMutex_Lock(&scan_lock);
-        dma_copy(512);
-        const u32 n = build->n_ta;
-        scan_upto(n - scan_pos > 512 ? scan_pos + 512 : n);
-        OSFastMutex_Unlock(&scan_lock);
-        OSSleepTicks(OSMicrosecondsToTicks(50));
-    }
-    return 0;
-}
-static void scan_stop_thread()
-{
-    if (scan_threaded)
-    {
-        scan_stop = true;
-        OSJoinThread(&scan_thread, nullptr);
-        scan_threaded = false;
-    }
-}
-static void scan_start()
-{
-    static u8 stack[64 * 1024] __attribute__((aligned(16)));
-    OSFastMutex_Init(&scan_lock, "ta scan");
-    if (OSCreateThread(&scan_thread, scan_main, 0, nullptr, stack + sizeof(stack), sizeof(stack), 16,
-                       OS_THREAD_ATTRIB_AFFINITY_CPU0))
-    {
-        OSSetThreadName(&scan_thread, "nullDC TA scan");
-        OSResumeThread(&scan_thread);
-        scan_threaded = true;
-        printf("[ta] scanner thread on core 0\n");
-    }
-}
-// an ordering point: everything received so far scanned, interrupts raised; leaves the lock held for the caller
-static void scan_sync_lock()
-{
-    if (!scan_threaded)
-    {
-        if (g_exp_sq_lazy)
-            scan_upto(build->n_ta);
-        return;
-    }
-    OSFastMutex_Lock(&scan_lock);
-    dma_copy(~0u);
-    scan_upto(build->n_ta);
-    wiiu_ta_poll();
-}
-static void scan_unlock()
-{
-    if (scan_threaded)
-        OSFastMutex_Unlock(&scan_lock);
-}
 
 static void scan_reset()
 {
@@ -736,13 +549,7 @@ static void scan_block(const u32 *b)
     case ParamType_End_Of_List:
         if (scan_list == ListType_None)
             scan_list = pcw.ListType;
-        if (scan_threaded)
-        {
-            if (scan_list < 5)
-                ta_irq_count[scan_list] = ta_irq_count[scan_list] + 1;
-        }
-        else
-            spg_SchedListEndIrq(scan_list);
+        spg_SchedListEndIrq(scan_list);
         scan_list = ListType_None;
         scan_vertex = 1;
         break;
@@ -799,22 +606,9 @@ static void scan_block(const u32 *b)
 void wiiu_ta_input(const u32 *data, u32 blocks)
 {
     wiiu_ta_dma_blocks += blocks;
-    if (scan_threaded && g_exp_dma_async)
-    {
-        if (dma_w - dma_r >= DMA_QUEUE)
-        {
-            scan_sync_lock();
-            scan_unlock();
-        }
-        dma_queue[dma_w % DMA_QUEUE] = { data, blocks };
-        __asm__ volatile("sync" : : : "memory");
-        dma_w = dma_w + 1;
-        return;
-    }
     for (u32 i = 0; i < blocks; i++, data += 8)
     {
-        if (!scan_threaded && !g_exp_sq_lazy)
-            scan_block(data);
+        scan_block(data);
         if (build->n_ta < WIIU_MAX_TA_BLOCKS)
         {
             // each block fills a whole cache line: dcbz claims it without reading memory first (the plain copy
@@ -823,8 +617,6 @@ void wiiu_ta_input(const u32 *data, u32 blocks)
             __asm__ volatile("dcbz 0,%0" : : "r"(dst) : "memory");
             for (int k = 0; k < 8; k++)
                 dst[k] = data[k];
-            if (scan_threaded)
-                __asm__ volatile("sync" : : : "memory");   // the scanner must not see the count before the block
             build->n_ta++;
         }
         else
@@ -835,9 +627,6 @@ void wiiu_ta_input(const u32 *data, u32 blocks)
 // The JIT's store-queue flush without the MMU (pref @Rn into 0xE0000000-0xE3FFFFFF), instead of do_sqw_nommu,
 // TAWriteSQ, libPvr_TaSQ and wiiu_ta_input in turn: TA polygon data, the common case by far (Soulcalibur sends
 // ~19,000 blocks a frame this way), goes straight into the frame being built; anything else takes the full path.
-#ifdef WIIU_INSTRUMENT
-u32 wiiu_sq_other[3];   // store queue blocks not for the TA: RAM, VRAM, anything else
-#endif
 void FASTCALL do_sqw_nommu(u32 dst);
 void FASTCALL wiiu_sqw_fast(u32 dst)
 {
@@ -849,9 +638,6 @@ void FASTCALL wiiu_sqw_fast(u32 dst)
         const u32 area = (address >> 26) & 7;
         u8 *d = !g_exp_sq_fast ? nullptr : area == 3 ? &mem_b[address & RAM_MASK] :
                 area == 1 && !(address & 0x01000000) ? &vram[address & VRAM_MASK] : nullptr;
-#ifdef WIIU_INSTRUMENT
-        wiiu_sq_other[area == 3 ? 0 : area == 1 ? 1 : 2]++;
-#endif
         if (d)
         {
             const u32 *data = (const u32 *)&sq_both[dst & 0x20];
@@ -864,47 +650,28 @@ void FASTCALL wiiu_sqw_fast(u32 dst)
         return;
     }
     CCALL(CC_SQW);
-    WIIU_PROF(PROF_SQW);
-    if (dma_r != dma_w)
-    {
-        // blocks stay in arrival order
-        scan_sync_lock();
-        scan_unlock();
-    }
     const u32 *data = (const u32 *)&sq_both[dst & 0x20];
     wiiu_ta_sq_blocks++;
-    if (g_exp_sq_fast && !scan_threaded && build->n_ta < WIIU_MAX_TA_BLOCKS)
+    if (g_exp_sq_fast && build->n_ta < WIIU_MAX_TA_BLOCKS)
     {
         // exp_sq_fast: a block continuing a vertex needs no parsing, and four doubles move it in half the instructions
-        if (g_exp_sq_lazy)
-            ;
-        else if (scan_skip)
+        if (scan_skip)
             scan_skip--;
         else
             scan_block(data);
         u32 *d = build->ta[build->n_ta++];
-        if (g_exp_sq_words)
-        {
-            __asm__ volatile("dcbz 0,%0" : : "r"(d) : "memory");
-            for (int k = 0; k < 8; k++)
-                d[k] = data[k];
-            return;
-        }
         __asm__ volatile("dcbz 0,%0\n\tlfd 0,0(%1)\n\tlfd 1,8(%1)\n\tlfd 2,16(%1)\n\tlfd 3,24(%1)\n\t"
                          "stfd 0,0(%0)\n\tstfd 1,8(%0)\n\tstfd 2,16(%0)\n\tstfd 3,24(%0)"
                          : : "b"(d), "b"(data) : "memory", "fr0", "fr1", "fr2", "fr3");
         return;
     }
-    if (!scan_threaded && !g_exp_sq_lazy)
-        scan_block(data);
+    scan_block(data);
     if (build->n_ta < WIIU_MAX_TA_BLOCKS)
     {
         u32 *d = build->ta[build->n_ta];
         __asm__ volatile("dcbz 0,%0" : : "r"(d) : "memory");
         for (int k = 0; k < 8; k++)
             d[k] = data[k];
-        if (scan_threaded)
-            __asm__ volatile("sync" : : : "memory");
         build->n_ta++;
     }
     else
@@ -920,29 +687,21 @@ static void ta_event(u32 what)
 enum { TA_EV_LIST_CONT = 1, TA_EV_SOFT_RESET = 2, TA_EV_LIST_INIT = 3 };
 void ListCont()
 {
-    scan_sync_lock();
     ta_event(TA_EV_LIST_CONT);
-    scan_unlock();
 }
 void ListInit()
 {
-    if (g_exp_scan_thread && !scan_threaded)
-        scan_start();
-    scan_sync_lock();
     // like gxRend.cpp, a list init empties nothing: a render draws all the TA input since the previous one. The BIOS
     // intro sends its swirl after one render starts and its grey panels after the next list init, for the same
     // render; emptying here dropped the swirl. The frame is emptied when StartRender hands it over.
     scan_reset();
     ta_event(TA_EV_LIST_INIT);
     list_init_since_render = true;
-    scan_unlock();
 }
 void SoftReset()
 {
-    scan_sync_lock();
     scan_reset();
     ta_event(TA_EV_SOFT_RESET);
-    scan_unlock();
 }
 
 // ---- worker: decode ---------------------------------------------------------------------------------------
@@ -950,10 +709,7 @@ void SoftReset()
 extern "C" int get_controller_type();
 extern "C" u16 GetLightGunX(int port);
 extern "C" u16 GetLightGunY(int port);
-float wiiu_depth_cap;   // depth_cap=X (test): the depth scale's largest 1/W at most X
-int wiiu_depth_stats;   // depth_stats=1: log the 1/w spread every 60 renders (test setting)
 int wiiu_exp_depth_drawn = 1;   // exp_depth_drawn=0: the depth scale from every vertex and volume, as before
-int wiiu_dump_render;   // dump_render=N: log the decoded frame at render N
 OSTime wiiu_decode_ticks[3];   // inside TA decode: the TA command loop, the depth-scale pass, the rest
 u32 wiiu_decode_blocks;
 void wiiu_ta_decode(WiiuFrame *f)
@@ -965,10 +721,6 @@ void wiiu_ta_decode(WiiuFrame *f)
     dec = f;
     f->nv = f->ns = f->n_mv_tris = f->n_mp = 0;
     f->max_invw = 0.0f;
-    f->streamed_v = wiiu_stream_v;
-    f->streamed_i = wiiu_stream_i;
-    f->streamed_nv = f->streamed_ns = f->streamed_ni = 0;
-    f->max_drawn = 0.0f;
     TileAccel.ListInit();   // TaCmd back to the start
     u32 ev = 0;
     for (u32 i = 0; i <= f->n_ta; )
@@ -993,26 +745,13 @@ void wiiu_ta_decode(WiiuFrame *f)
     }
     const OSTime d1 = OSGetSystemTime();
     wiiu_decode_ticks[0] += d1 - d0;
-    if (wiiu_depth_stats && wiiu_renders % 60 == 0)
-    {
-        // depth_stats: how far the largest 1/w sits above the bulk (log10 buckets, strips' vertices)
-        u32 hist[12] = {};
-        for (u32 k = 0; k < f->nv; k++)
-        {
-            const float z = f->v[k].z;
-            int b = z <= 0.0f || z != z ? 0 : z >= 1e30f ? 11 : (int)floorf(log10f(z)) + 5;
-            hist[b < 0 ? 0 : b > 11 ? 11 : b]++;
-        }
-        printf("[depth] render %u max 1/w %g; 1/w by decade 1e-4..1e5: %u %u %u %u %u %u %u %u %u %u, inf %u\n", wiiu_renders,
-               f->max_invw, hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], hist[8], hist[9], hist[10], hist[11]);
-    }
     // the depth scale (1 / the largest 1/w) from the polygons drawn: strips of 3 or more vertices. A larger 1/w
     // elsewhere (Jet Grind Radio's shadow volumes: 100000) squeezed the whole scene into depths ~1e-5, where the
     // clip-space conversion rounds them together and near surfaces flicker through each other
     if (wiiu_exp_depth_drawn)
     {
-        float m = f->max_drawn;   // streamed: taken strip by strip
-        for (u32 i = f->streamed_ns; i < f->ns; i++)
+        float m = 0.0f;
+        for (u32 i = 0; i < f->ns; i++)
             if (f->s[i].count >= 3)
                 for (u32 k = f->s[i].first; k < f->s[i].first + f->s[i].count && k < f->nv; k++)
                     if (f->v[k].z > m && f->v[k].z < 1e30f)
@@ -1029,8 +768,6 @@ void wiiu_ta_decode(WiiuFrame *f)
         }
         if (m > 0.0f)
             f->max_invw = m;
-        if (wiiu_depth_cap > 0.0f && f->max_invw > wiiu_depth_cap)
-            f->max_invw = wiiu_depth_cap;   // test: depth precision for the bulk, nearer vertices clamp
     }
     const OSTime d2 = OSGetSystemTime();
     wiiu_decode_ticks[1] += d2 - d1;
@@ -1068,56 +805,6 @@ void wiiu_ta_decode(WiiuFrame *f)
             for (const auto &c : xy)
                 f->v[f->nv++] = { c[0], c[1], z, 0xFF3030FFu, 0, 0.0f, 0.0f };
             f->s[f->ns++] = st;
-        }
-    }
-    if (wiiu_dump_render && wiiu_renders >= (u32)wiiu_dump_render)
-    {
-        wiiu_dump_render = 0;
-        printf("[frame] renders %u: %u strips, %u vertices, max 1/w %g\n", wiiu_renders, f->ns, f->nv, f->max_invw);
-        for (u32 i = 0; i < f->n_mp; i++)
-        {
-            const WiiuModVol &m = f->mp[i];
-            float zmin = 1e30f, zmax = -1e30f, xmin = 1e30f, xmax = -1e30f, ymin = 1e30f, ymax = -1e30f;
-            u32 tiny = 0;
-            for (u32 k = m.first * 3; k < (m.first + m.count) * 3 && k < f->n_mv_tris * 3; k++)
-            {
-                const WiiuMvVertex &v = f->mv[k];
-                zmin = v.z < zmin ? v.z : zmin; zmax = v.z > zmax ? v.z : zmax;
-                xmin = v.x < xmin ? v.x : xmin; xmax = v.x > xmax ? v.x : xmax;
-                ymin = v.y < ymin ? v.y : ymin; ymax = v.y > ymax ? v.y : ymax;
-                tiny += !(v.z > 1e-6f);
-            }
-            printf("[frame] volume %u: last %u, cull %u, first %u, %u triangles, mode %u, 1/w %g..%g (%u <= 1e-6), x %g..%g, y %g..%g\n", i,
-                   m.last, m.cull, m.first, m.count, m.mode, zmin, zmax, tiny, xmin, xmax, ymin, ymax);
-        }
-        for (u32 i = 0; i < f->ns; i++)
-        {
-            const WiiuStrip &st = f->s[i];
-            printf("[frame] strip %u list %u first %u n %u pcw %08x isp %08x tsp %08x tcw %08x\n", i, st.list, st.first,
-                   st.count, st.pcw, st.isp, st.tsp, st.tcw);
-            {
-                // 16-bit textures: how their texels' alpha is spread (ARGB4444's top nibble, ARGB1555's top bit)
-                const u32 fmt = (st.tcw >> 27) & 7, addr = (st.tcw << 3) & VRAM_MASK;
-                const u32 tw = 8u << ((st.tsp >> 3) & 7), th = 8u << (st.tsp & 7);
-                if ((st.pcw >> 3 & 1) && (fmt == 0 || fmt == 2) && !(st.tcw >> 30 & 1))
-                {
-                    u32 hist[16] = {};
-                    for (u32 k = 0; k < tw * th && addr + k * 2 + 1 < VRAM_MASK; k++)
-                    {
-                        const u32 a = addr + k * 2;
-                        const u16 px = *host_ptr_xor((u16 *)&PVRPARAMS.vram[a & VRAM_MASK & ~1u]);
-                        hist[fmt == 2 ? px >> 12 : (px >> 15) * 15]++;
-                    }
-                    printf("[frame]   texture %ux%u fmt %u alpha nibbles 0:%u 1-7:%u 8-14:%u 15:%u\n", tw, th, fmt, hist[0],
-                           hist[1] + hist[2] + hist[3] + hist[4] + hist[5] + hist[6] + hist[7],
-                           hist[8] + hist[9] + hist[10] + hist[11] + hist[12] + hist[13] + hist[14], hist[15]);
-                }
-            }
-            for (u32 k = 0; k < st.count; k++)
-            {
-                const WiiuVertex &v = f->v[st.first + k];
-                printf("[frame]  %.1f %.1f %g %08x\n", v.x, v.y, v.z, v.col);
-            }
         }
     }
     // anything a draw would read out of range (Cemu crashed in its draw handler on a decoded frame)

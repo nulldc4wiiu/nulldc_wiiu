@@ -2,7 +2,7 @@
  * core, and the area is either writable or executable, never both (OSSwitchSecCodeGenMode). Writers call
  * wiiu_codegen_write_begin() before storing code; wiiu_codegen_executable() then flushes the data cache,
  * switches the area back to executable and invalidates the instruction cache for the range.
- * Checked on a real console 2026-10-28 (scratch/codegen-probe): OSCodegenCopy is refused there. */
+ * Checked on a real console: OSCodegenCopy is refused there. */
 #pragma once
 #include <stdint.h>
 #ifdef __cplusplus

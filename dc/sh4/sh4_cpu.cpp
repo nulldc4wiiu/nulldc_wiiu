@@ -4,7 +4,6 @@
 */
 
 #include "types.h"
-#include "wiiu/prof_wiiu.h"
 #include "dc/pvr/pvr_if.h"
 #include "sh4_interpreter.h"
 #include "dc/sh4/rec_v2/ccall_census.h"
@@ -132,7 +131,6 @@ template<bool mmu_on>
 INLINE void FASTCALL do_sqw(u32 Dest)
 {
 	CCALL(CC_SQW);
-	WIIU_PROF(PROF_SQW);
 	u32* sq = (u32*)&sq_both[Dest & 0x20];
 	u32 Address;
 

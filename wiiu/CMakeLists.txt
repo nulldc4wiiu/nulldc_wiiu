@@ -1,6 +1,7 @@
 # Native Wii U (wut) build of nullDC4Wii. The core keeps its Wii code paths (_WII, HOST_OS == OS_WII,
 # same PowerPC JIT); libogc calls are supplied by wiiu/compat and the Wii-only frontend is replaced by
-# wiiu/main_wiiu.cpp. Build: powerpc-eabi-cmake -S wiiu -B build-wiiu -G Ninja && ninja -C build-wiiu
+# wiiu/main_wiiu.cpp. Build: wiiu/build-wiiu.sh (see wiiu/Dockerfile), or powerpc-eabi-cmake -S wiiu -B build-wiiu -G Ninja
+# && ninja -C build-wiiu
 cmake_minimum_required(VERSION 3.13)
 project(nulldc_wiiu C CXX)
 
@@ -40,13 +41,12 @@ set(COMMON_FLAGS -O2 -fno-strict-aliasing -fsingle-precision-constant -fomit-fra
     -Wno-unused-parameter -Wno-missing-field-initializers -Wno-write-strings -Wno-narrowing)
 target_compile_options(nulldc PRIVATE ${COMMON_FLAGS} $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fpermissive>)
 target_link_libraries(nulldc m)
-# sampler, counters and write census; -DWIIU_INSTRUMENT=OFF builds with none of it
-option(WIIU_INSTRUMENT "profiling instrumentation" ON)
-if(WIIU_INSTRUMENT)
-    target_compile_definitions(nulldc PRIVATE WIIU_INSTRUMENT)
-endif()
-target_link_options(nulldc PRIVATE -Wl,--wrap=time)   # bench= fixes the clock (main_wiiu.cpp)
 wut_create_rpx(nulldc)
+# the license files, bundled into the wuhb (wiiu/make-notices.sh fails the configure if a text is missing)
+execute_process(COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/make-notices.sh ${CMAKE_CURRENT_BINARY_DIR}/content RESULT_VARIABLE notices_rv)
+if(NOT notices_rv EQUAL 0)
+    message(FATAL_ERROR "wiiu/make-notices.sh failed")
+endif()
 # icon.png: the Homebrew Channel banner (apps/apps/nulldc4wii/icon.png) remade at 128x128 by make_icon.py
-wut_create_wuhb(nulldc NAME "nullDC" SHORTNAME "nullDC" AUTHOR "nullDC4Wii, Wii U build"
+wut_create_wuhb(nulldc NAME "nullDC" SHORTNAME "nullDC" AUTHOR "nullDC4Wii, Wii U build" CONTENT "${CMAKE_CURRENT_BINARY_DIR}/content"
                 ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.png")

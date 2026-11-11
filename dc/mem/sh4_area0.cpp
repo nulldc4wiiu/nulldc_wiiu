@@ -4,9 +4,6 @@
 #include "dc/pvr/pvr_if.h"
 #include "dc/gdrom/gdrom_if.h"
 #include "dc/aica/aica_if.h"
-#ifdef __WIIU__
-void wiiu_bootrom_write_dump();
-#endif
 
 #include "plugins/plugin_manager.h"
 
@@ -345,9 +342,6 @@ void FASTCALL WriteMem_area0(u32 addr, T data)
     // EMUERROR4("Write to Boot ROM (read-only), addr=%x, data=%x, sz=%d", addr, data, sz);
     // printf instead of EMUERROR because tiny freeze otherwise
 		printf("Write to Boot ROM (read-only), addr=%x, data=%x, sz=%d\n", addr, data, sz);
-#ifdef __WIIU__
-		wiiu_bootrom_write_dump();   // once: the SH4 state that led here (wiiu/debug_wiiu.cpp)
-#endif
 		return;
 	}
 

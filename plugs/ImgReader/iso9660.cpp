@@ -85,8 +85,6 @@ void iso_ReadSSect(u8* p_out,u32 sector,u32 secsz)
 // the read-ahead chunk cache (wiiu/disc_cache_wiiu.cpp)
 void wiiu_disc_cache_track(int track, const char *path, u32 ss, s32 offset);
 bool wiiu_disc_read(int track, u32 index, u8 *out, FILE *f);
-extern int wiiu_disc_verify;
-static u32 disc_verify_bad;
 
 static void wiiu_read_sector(u8 *buff, u32 sector, u32 secsz)
 {
@@ -106,13 +104,6 @@ static void wiiu_read_sector(u8 *buff, u32 sector, u32 secsz)
 		PatchRegion_0(buff, secsz);
 	if (sector == 45006)
 		PatchRegion_6(buff, secsz);
-	if (wiiu_disc_verify)
-	{
-		static u8 check[2352];
-		iso_ReadSSect(check, sector, secsz);
-		if (memcmp(check, buff, secsz) && disc_verify_bad++ < 10)
-			printf("[disc] verify: sector %u (track %d) differs from a direct read\n", sector, i);
-	}
 }
 #endif
 

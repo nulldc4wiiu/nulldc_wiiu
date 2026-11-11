@@ -12,7 +12,6 @@
 */
 
 #include "blockmanager.h"
-#include "wiiu/prof_wiiu.h"
 #include "ccall_census.h"
 #include "ngen.h"
 
@@ -35,9 +34,6 @@
 // Use vectors for dynamic block storage (same as original, but with improvements)
 typedef vector<DynarecBlock> bm_List;
 static bm_List blocks[BM_BLOCKLIST_COUNT];
-#ifdef WIIU_INSTRUMENT
-extern u32 g_cnt_getcode;
-#endif
 
 // Cache for fast lookups - exposed for potential assembly access (same as original)
 DynarecBlock* cache[BM_BLOCKLIST_COUNT];
@@ -105,10 +101,6 @@ static inline DynarecCodeEntry* bm_CheckCache(u32 addr, u32 idx)
 DynarecCodeEntry* FASTCALL bm_GetCode(u32 addr)
 {
 	CCALL(CC_GETCODE);
-	WIIU_PROF(PROF_GETCODE);
-#ifdef WIIU_INSTRUMENT
-	g_cnt_getcode++;
-#endif
 	u32 idx = bm_AddrHash(addr);
 	
 	// Fast path: check cache first
@@ -320,38 +312,7 @@ void bm_InvalidateRange(u32 start_addr, u32 end_addr)
 	}
 }
 
-#ifdef WIIU_INSTRUMENT
-// every block's host and SH4 address (the sampling profiler); returns how many
-u32 bm_Snapshot(u32* codes, u32* addrs, u32 max)
-{
-	u32 n=0;
-	for (u32 i=0;i<BM_BLOCKLIST_COUNT;i++)
-		for (size_t j=0;j<blocks[i].size() && n<max;j++)
-		{
-			codes[n]=(u32)(uintptr_t)blocks[i][j].code;
-			addrs[n++]=blocks[i][j].addr;
-		}
-	return n;
-}
-#endif
 
-// the SH4 address of the block holding this host address (debug dumps), 0: none
-u32 bm_FindHost(void* host)
-{
-	u32 best=0;
-	u8* best_code=0;
-	for (u32 i=0;i<BM_BLOCKLIST_COUNT;i++)
-		for (size_t j=0;j<blocks[i].size();j++)
-		{
-			u8* c=(u8*)blocks[i][j].code;
-			if (c<=(u8*)host && c>best_code)
-			{
-				best_code=c;
-				best=blocks[i][j].addr;
-			}
-		}
-	return best;
-}
 
 // Get statistics (for debugging)
 #ifdef BM_ENABLE_STATS

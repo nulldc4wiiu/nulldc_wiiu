@@ -1,6 +1,5 @@
 #include "ta.h"
 #include "Renderer_if.h"	// TaPerf / PERF_TICKS32 / g_ta_profile_preset
-#include "wiiu/prof_wiiu.h"
 
 // Tile Accelerator (TA) state machine for PowerVR2 (Dreamcast) emulation
 // Handles DMA and Store Queue writes, dispatches polygon/vertex/control params
@@ -52,7 +51,6 @@ void libPvr_TaSQ(u32* data)
         ta_sq_measured(t);
         return;
     }
-    WIIU_PROF(PROF_TA_DECODE);
     TaCmd(t, t);
 }
 
@@ -68,8 +66,6 @@ void libPvr_TaDMA(u32* data, u32 size)
     verify(size > 0);
 
     const u32 _t0 = g_ta_profile_preset ? PERF_TICKS32() : 0;
-
-    WIIU_PROF(PROF_TA_DECODE);
     Ta_Dma* ta_data     = (Ta_Dma*)data;
     Ta_Dma* ta_data_end = ta_data + size - 1;
 

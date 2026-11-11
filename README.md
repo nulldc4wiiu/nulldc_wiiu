@@ -1,3 +1,8 @@
+> **Unofficial Wii U port.** This repository is **nullDC (Wii U)**, a standalone native Wii U port of
+> nullDC4Wii. It is not the official nullDC4Wii repository and is not affiliated with its developers.
+> For installing, controls and known issues, see [README-WiiU.md](README-WiiU.md). Please report
+> Wii U issues here, not upstream. The original nullDC4Wii README follows.
+
 [![Discord](https://img.shields.io/discord/286429969104764928?label=NullDC4wii&logo=discord&logoColor=FFFFFF)](https://discord.gg/sJst6jmQyH)
 
 # NullDC4Wii - Dreamcast Emulator for Wii

@@ -37,8 +37,8 @@
 #include <stdlib.h>
 #include <wiiuse/wpad.h>
 #include "dc/dc.h"
-#include "wii/wii_exit.h"
-#include "plugs/libwiidrc/wiidrc.h"  // ordered shutdown for the exit combo (EXIT FIX preset)
+#include "wii/wii_exit.h"  // ordered shutdown for the exit combo (EXIT FIX preset)
+#include "plugs/libwiidrc/wiidrc.h"  // the GamePad (WiiDRC) drives the gun too
 
 // Dreamcast controller button definitions (same as drkMapleDevices.cpp)
 #define key_CONT_C          (1 << 0)
@@ -90,11 +90,6 @@ extern "C"
 }
 
 extern "C" int get_player_count(void);
-#ifdef __WIIU__
-extern u16 wiiu_auto_mask[16];
-extern int wiiu_auto_n, wiiu_auto_every, wiiu_gun_aim_x, wiiu_gun_aim_y;
-extern u32 wiiu_vblanks;
-#endif
 
 /**
  * Scales a Wii IR coordinate to a Dreamcast screen coordinate.
@@ -200,14 +195,6 @@ void UpdateLightGunState(u32 port)
         if (drc & WIIDRC_BUTTON_LEFT)                     kcode[0] &= ~key_CONT_DPAD_LEFT;
         if (drc & WIIDRC_BUTTON_RIGHT)                    kcode[0] &= ~key_CONT_DPAD_RIGHT;
     }
-    // test settings (wiiu.cfg gun_aim=x,y and auto_press): a fixed aim and scripted buttons for Cemu runs
-    if (port == 0 && wiiu_gun_aim_x >= 0)
-    {
-        gun_x[0] = wiiu_gun_aim_x;
-        gun_y[0] = wiiu_gun_aim_y;
-    }
-    if (port == 0 && wiiu_auto_n && wiiu_vblanks % wiiu_auto_every < 6)
-        kcode[0] &= ~wiiu_auto_mask[wiiu_vblanks / wiiu_auto_every % wiiu_auto_n];
 #endif
 
     // Start / coin

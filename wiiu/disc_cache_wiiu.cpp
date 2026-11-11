@@ -2,8 +2,7 @@
 // the game. On a console the emulator read the image a sector at a time (one seek and one read each, about
 // 450 SD round trips in a 120 ms menu frame), which is what made the sound stutter at every load. Now a miss
 // reads its whole chunk in one go, and every chunk the game touches queues the next two for the reader thread,
-// which has its own file handles. Raw sectors are cached; iso9660.cpp converts them as before. disc_verify=1
-// in wiiu.cfg also reads each sector the old way and logs any difference.
+// which has its own file handles. Raw sectors are cached; iso9660.cpp converts them as before.
 #include <coreinit/event.h>
 #include <coreinit/fastmutex.h>
 #include <coreinit/thread.h>
@@ -13,7 +12,6 @@
 #include <string.h>
 #include "types.h"
 
-int wiiu_disc_verify;   // main_wiiu.cpp sets it from wiiu.cfg
 
 namespace
 {

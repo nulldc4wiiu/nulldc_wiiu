@@ -780,7 +780,6 @@ struct maple_lightgun : maple_base
 	}
 };
 
-
 // ============================================================================
 // Maracas (Samba de Amigo)
 // Maple function: MFID_0_Input

@@ -679,9 +679,6 @@ void FASTCALL WriteMem_area7(u32 addr, T data)
 // Only active when CCN_CCR.ORA bit is set.
 // ---------------------------------------------------------------------------
 
-#ifdef WIIU_INSTRUMENT
-u32 g_ocr_max;   // highest on-chip RAM offset written (wr_census line): the fastmem map doesn't mirror
-#endif
 template <u32 sz, class T>
 T FASTCALL ReadMem_area7_OCR_T(u32 addr)
 {
@@ -713,13 +710,6 @@ void FASTCALL WriteMem_area7_OCR_T(u32 addr, T data)
 	u32 ofs = addr & OnChipRAM_MASK;
 
 #ifdef __WIIU__
-#ifdef WIIU_INSTRUMENT
-	{
-		const u32 at = addr & 0x03FFFFFF;
-		if (at > g_ocr_max)
-			g_ocr_max = at;
-	}
-#endif
 	if (sz == 1)      OnChipRAM[ofs ^ 3]            = (u8)data;
 	else if (sz == 2) *(u16*)&OnChipRAM[ofs ^ 2]    = (u16)data;
 	else if (sz == 4) *(u32*)&OnChipRAM[ofs]        = (u32)data;
