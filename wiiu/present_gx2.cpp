@@ -347,6 +347,7 @@ struct Scene
     u32 n_tex;
     WiiuTexInval inv[1024];   // images decoded for this scene: their GPU copies are invalidated before drawing
     u32 n_inv;
+    bool inv_all;             // inv overflowed: invalidate the whole texture cache instead
     u32 seq, frame_seq;       // scene number (texture versions), and the emulator frame it was built from
     float canvas_w, canvas_h;
 };
@@ -719,6 +720,7 @@ static void build_scene(const WiiuFrame *f, GpuVertex *out, u32 *idx, float w, f
                                                         &sc->n_inv, 1024) : -1;
         sc->strip_tex[i] = t < 0 ? 0xFFFF : (u16)t;
     }
+    sc->inv_all = sc->n_inv == 1024;   // a full list may have missed images
     const OSTime s3 = OSGetSystemTime();
     intake_ticks[0] += s1 - s0;
     intake_ticks[1] += s2 - s1;
@@ -777,9 +779,19 @@ static int intake_main(int, const char **)
             intake_using = nullptr;
             OSFastMutex_Unlock(&frame_lock);
             OSFastMutex_Lock(&slot_lock);
-            // a full queue loses its oldest scene to the newer one
+            // a full queue loses its oldest scene to the newer one, which takes over its texture invalidations:
+            // images decoded for the dropped scene are unchanged for this one, so it didn't list them
             if (n_ready == (wiiu_exp_frame_queue ? 2 : 1))
             {
+                const Scene &dropped = scenes[ready_q[0]];
+                for (u32 i = 0; i < dropped.n_inv && !sc->inv_all; i++)
+                {
+                    if (sc->n_inv < 1024)
+                        sc->inv[sc->n_inv++] = dropped.inv[i];
+                    else
+                        sc->inv_all = true;
+                }
+                sc->inv_all |= dropped.inv_all;
                 ready_q[0] = ready_q[1];
                 n_ready--;
             }
@@ -829,6 +841,16 @@ static void start_intake()
     }
 }
 
+// the GPU's copies of the textures a scene's build decoded (CPU-flushed at decode) are dropped before it's drawn
+static void invalidate_textures(const Scene &sc)
+{
+    if (sc.inv_all)
+        GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, nullptr, 0xFFFFFFFF);
+    else
+        for (u32 i = 0; i < sc.n_inv; i++)
+            GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, sc.inv[i].image, sc.inv[i].bytes);
+}
+
 // GX2 thread, each vsync: the newest ready scene becomes the one drawn (the GPU finished the previous one in the
 // last vsync's WHBGfxFinishRender, so its slot is the intake thread's again)
 static void adopt_scene()
@@ -847,8 +869,7 @@ static void adopt_scene()
     const Scene &sc = scenes[r];
     GX2Invalidate(GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, slot_v[r], (sc.quad_base + 4) * vertex_bytes());
     GX2Invalidate(GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, slot_i[r], sc.idx_count * sizeof(u32));
-    for (u32 i = 0; i < sc.n_inv; i++)
-        GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, sc.inv[i].image, sc.inv[i].bytes);
+    invalidate_textures(sc);
     geo_cur = r;
     committed = nullptr;
     scene_dirty = true;
@@ -1555,8 +1576,7 @@ static void process_rtt()
                 (u32 *)GX2RLockBufferEx(&rtt_idx_buf, (GX2RResourceFlags)0), (float)w, (float)h, &rtt_scene);
     GX2RUnlockBufferEx(&rtt_buf, (GX2RResourceFlags)0);
     GX2RUnlockBufferEx(&rtt_idx_buf, (GX2RResourceFlags)0);
-    for (u32 i = 0; i < rtt_scene.n_inv; i++)
-        GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, rtt_scene.inv[i].image, rtt_scene.inv[i].bytes);
+    invalidate_textures(rtt_scene);
     committed = nullptr;
     commit(&rtt_scene);
     // everything the write-back needs, while the frame is certainly still ours
