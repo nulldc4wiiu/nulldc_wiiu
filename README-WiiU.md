@@ -1,27 +1,52 @@
 # nullDC (Wii U)
 
-A native Wii U port of **nullDC4Wii**, the Dreamcast emulator for the Wii (itself a fork of skmp's nullDCe). It
-runs as a Wii U app instead of in vWii mode, so it gets the Wii U's three CPU cores, its memory, and its GPU (GX2)
-with HD output.
+A native Wii U port of **nullDC4Wii** that runs most games at or close to full speed.
+
+nullDC4Wii is the Dreamcast emulator for the Wii (itself a fork of skmp's nullDCe). This port runs as a Wii U app
+instead of in vWii mode, so it gets the Wii U's three CPU cores, its memory, and its GPU (GX2) with HD output.
+
+This project only exists because of nullDC4Wii's effort to resurrect the project.
 
 **Version v0.800-U1** (based on nullDC4Wii alpha 0.800)
 
 See: AI / Claude Disclosure below
 
+## What's new in v0.800-U1
+
+The first pass of the Wii U port, focused on making better use of the Wii U's hardware. Not much effort has gone
+into optimizing JIT execution (yet).
+
+This release:
+
+- runs as a native Wii U app (Aroma), not in vWii, using all three CPU cores and the GX2 GPU
+- a new GX2 renderer: 960x720 or 640x480 3D, fog, modifier-volume shadows, translucent sorting, render to texture
+- the SH-4 JIT in the Wii U's code area, with fast memory mapped into the Wii U's address space
+- graphics, sound and disc reading on their own cores
+- a game picker with help pages and an options page, and a Dreamcast menu entry for memory cards and settings
+- up to four controllers (GamePad, Pro Controller, Classic Controller, Wii Remote), and the light gun with the Wii
+  Remote's pointer
+
 ## Compatibility & speed
 
-Measured on a Wii U console in real play:
+Measured on a Wii U console with this release's default settings, over 80-90 s of each game's demo or play
+(100% = Dreamcast speed):
 
-| Game | Speed |
-|---|---|
-| Marvel vs. Capcom 2 | full speed |
-| Soulcalibur | ~99% (about 55 frames shown per second at 960x720) |
-| Crazy Taxi | ~99% |
-| Metropolis Street Racer | ~100% |
-| Jet Grind Radio | plays |
-| The House of the Dead 2 | plays, with the light gun |
-| Shenmue | plays (sound distorts in the rain and thunder scenes) |
-| Dead or Alive 2 | **not full speed**: heavy fights run at about 83% |
+| Game | Speed | Notes |
+|---|---|---|
+| Soulcalibur | 99.7% | |
+| Marvel vs. Capcom 2 | 98.4% | |
+| Crazy Taxi | 99.5% | |
+| Metropolis Street Racer | 100% | |
+| Jet Grind Radio | 100% | |
+| Shenmue | 100% | sound distorts in the rain and thunder scenes |
+| Dead or Alive 2 | 94.5% demo, **87.4% in fights** | not full speed |
+| The House of the Dead 2 | 100% | light gun with the Wii Remote |
+| AeroWings 2 | 100% | |
+| Power Stone 2 | 100% | |
+| Spider-Man | 100% | |
+| Sonic Adventure | 98.7% | |
+| Gunbird 2 | 96.5% | dips for a few seconds while loading |
+| Street Fighter III: 3rd Strike | ~99% | |
 
 Other games may work; these are the ones tested on a console. Discs: `.gdi` (tested), `.cdi` and `.mds`. You need
 your own Dreamcast BIOS (`dc_boot.bin` and `dc_flash.bin`); it is not included.
@@ -48,12 +73,43 @@ Files under `sd:/wiiu/nulldc/`:
 | `nullDC.cfg` | the emulator core's own settings file |
 | `last_run.txt` | a one-line summary of the last run |
 
-`wiiu.cfg` settings (one `key=value` per line, all optional): `file=<path>` boots that disc without the picker,
-`picker=0` boots the Dreamcast menu when no `file=` is given, `fastmem=0|1`, `rt_width=960|640` and
-`audio_buffer=<ms>` override the options page, `sdlog=1` writes a log to `sd:/wiiu/nulldc/log.txt`, and
-`g_<preset>=<n>` sets any of nullDC4Wii's presets. The `exp_*` keys override the options page's speed settings one
-by one: `exp_gx2_core` and `exp_aica_thread` take a core (0: the emulator's own, 1: core 0, 2: core 2), and
-`exp_split_convert`, `exp_frame_queue`, `exp_sq_fast`, `exp_fm_x` and `exp_ps_ftrv` take 0 or 1.
+## Settings
+
+**Options page** (X in the picker; saved in `config.txt`). Settings marked "next start" apply the next time nullDC
+starts.
+
+| Option (`config.txt` key) | Values (default first) | Effect |
+|---|---|---|
+| Fast memory (`fastmem`) | on, off | Dreamcast memory mapped straight into the Wii U's; turn it off if a game crashes |
+| Light gun (`lightgun`) | off, on | the Wii Remote's pointer is the gun on every port; for light-gun games only |
+| 3D resolution (`render`) | 960x720, 640x480 | 640x480 halves the GPU work |
+| Sound when slow (`slow_sound`) | keeps pitch, slows down | below full speed: short gaps, or slower and lower sound |
+| Graphics on own core (`gfx_core`) | on, off | graphics away from the emulated CPU's core (next start) |
+| Sound on own core (`sound_core`) | on, off | sound mixing on another core (next start) |
+| Faster CPU code (`jit_fast`) | on, off | speedups in the translated code (next start) |
+| Smooth frames (`smooth`) | on, off | two finished frames may wait to be shown; one frame more delay (next start) |
+| Reloaded code check (`code_check`) | on, off | catches games that load new code over old (Marvel vs. Capcom 2) (next start) |
+| Sound buffer (`sound_buf`) | 100 ms, 46 ms | fewer gaps, or less delay between picture and sound (next start) |
+
+`config.txt` also takes `content=<folder>` (where to look for games) and `autoload=<file>` (start that game without
+the picker).
+
+**`wiiu.cfg`** (optional, one `key=value` per line; overrides the options page):
+
+| Key | Values | Effect |
+|---|---|---|
+| `file` | path, relative to `sd:/wiiu/nulldc/` | boot this disc or `.elf` without the picker |
+| `picker` | 1, 0 | `0`: boot the Dreamcast menu when no `file=` is given |
+| `fastmem` | 0, 1 | fast memory off or on |
+| `rt_width` | 960, 640 | 3D resolution (4:3) |
+| `audio_buffer` | milliseconds | the sound queue's target |
+| `sdlog` | 0, 1 | `1`: also write the log to `sd:/wiiu/nulldc/log.txt` |
+| `exp_gx2_core` | 0, 1, 2 | graphics thread on the emulator's core (0), core 0 (1) or core 2 (2) |
+| `exp_split_convert` | 0, 1 | vertex conversion split over two cores |
+| `exp_aica_thread` | 0, 1, 2 | sound mixing on the emulator's core (0), core 0 (1) or core 2 (2) |
+| `exp_sq_fast`, `exp_fm_x`, `exp_ps_ftrv` | 0, 1 | the parts of "Faster CPU code": store-queue writes, memory addressing, vector maths |
+| `exp_frame_queue` | 0, 1 | Smooth frames |
+| `g_<preset>` | number | any of nullDC4Wii's presets, e.g. `g_dynarec_preset=0` for the interpreter |
 
 ## Optimizations
 
@@ -137,7 +193,7 @@ The shaders are checked in compiled (`wiiu/shaders/*.gsh`). After editing a `.ve
 
 ## Known issues
 
-- **Dead or Alive 2** heavy fights run at about 83%: the emulated CPU's core is the limit.
+- **Dead or Alive 2** fights run at about 87%: the emulated CPU's core is the limit.
 - **Sound:** the sound chip's effects processor (DSP) isn't emulated, so there's no reverb or effects. Some scenes
   distort (The House of the Dead 2's intro, Shenmue's rain and thunder), and there's faint background
   scratchiness.
@@ -145,23 +201,24 @@ The shaders are checked in compiled (`wiiu/shaders/*.gsh`). After editing a `.ve
   Grind Radio's title; a striped band on Metropolis Street Racer's car options screen; translucent modifier
   volumes aren't drawn.
 - **Light gun** shots land slightly to the side of the crosshair.
-- **Gunbird 2:** the left stick doesn't move the ship; use the D-pad.
+- **Gunbird 2:** the left stick doesn't move the ship; use the D-pad. Speed drops for a few seconds while it
+  loads (seen in each test run).
 - **HOME** doesn't suspend the game; closing works.
 
 ## Future work
 
-Profiling on the console shows every game spends a fifth to a half of its translated-code time entering and
-leaving small code blocks. Next steps:
+The goal is full speed in every game.
 
-1. **Region compiler** — keep loops inside translated code instead of returning to the dispatcher between blocks.
-   Estimated 7–10% on Dead or Alive 2, enough to bring its heavy fights near full speed.
-2. **GPU instrumentation** — per-pass GPU timing and a timeline across the cores, to decide what can move to the
-   GPU (texture and vertex decoding) and what makes the GPU itself faster.
+1. **Graphics intake on two cores** — decoding the next frame on one core while another converts the current one.
+   In tests it made Dead or Alive 2's heavy fights about 13% faster; it needs wider testing before it ships.
+2. **Faster translated code** — the emulated CPU's core spends most of its time in translated code, much of it
+   waiting on memory; keeping emulated registers in host registers across blocks, and keeping loops inside
+   translated code, are the next steps.
 3. **Sound** — emulate the DSP, using the spare time on the sound core.
 
 ## AI / Claude Disclosure
 
-The Wii U port in this fork — the GX2 renderer, the platform layer, the multi-core layout, fast memory, and the
+This Wii U port — the GX2 renderer, the platform layer, the multi-core layout, fast memory, and the
 build and profiling tooling — was developed by perfcrash26 working with **Claude (Anthropic's AI coding
 assistant, via Claude Code)**. Claude wrote and edited the code, ran the build-and-test cycles, and analyzed the
 profiling data; every change was directed, reviewed, and tested on real hardware. The nullDC4Wii emulator is the
