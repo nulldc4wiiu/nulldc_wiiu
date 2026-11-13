@@ -1,5 +1,6 @@
 #version 330
-// PVR polygons. Clip mode: position is already in clip space (computed on the CPU from screen x/y and 1/w).
+// PVR polygons. The release build uses only clip mode (u_screen.x = 0); the others are kept for testing.
+// Clip mode: position is already in clip space (computed on the CPU from screen x/y and 1/w).
 // Screen mode (u_screen.x > 0.5, as Flycast): position is the screen position with w = 1 and the depth, a_pos.w
 // carries 1/w; colours and UVs are interpolated as value * 1/w and divided per pixel, so the GPU only clips flat
 // triangles, as the PVR draws them (near-camera vertices with screen coordinates in the millions, MvC2's sky).

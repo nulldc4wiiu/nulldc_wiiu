@@ -289,7 +289,7 @@ struct maple_sega_vmu: maple_base
 		FILE* f=fopen(path,"rb");
 		const size_t got=f ? fread(flash_data,1,sizeof(flash_data),f) : 0;
 		if (f) fclose(f);
-		// an all-zero card is one an earlier build created unformatted (Soulcalibur then reports no free space)
+		// an all-zero file is unformatted: format it (Soulcalibur reports no free space otherwise)
 		bool blank=true;
 		for (size_t i=0;i<sizeof(flash_data) && blank;i++)
 			blank=flash_data[i]==0;
@@ -306,10 +306,8 @@ struct maple_sega_vmu: maple_base
 			else
 				printf("Failed to create vmu save file \"%s\"\n",path);
 		}
-		return;
 #else
 		sprintf(temp,"vmu_save_%s.bin",logical_port);
-#endif
 		file=fopen(temp,"rb+");
 		if (!file)
 		{
@@ -325,6 +323,7 @@ struct maple_sega_vmu: maple_base
 		{
 			fread(flash_data,1,sizeof(flash_data),file);
 		}
+#endif
 	}
 	virtual ~maple_sega_vmu()
 	{

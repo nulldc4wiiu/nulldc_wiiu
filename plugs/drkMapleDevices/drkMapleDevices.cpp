@@ -736,6 +736,7 @@ void UpdateInputState(u32 port)
     MapButtons(port, wiiButtons, gcButtons, nunchuckButtons, classicButtons);
     MapAnalogStick(port, stickX, stickY, expStickX, expStickY);
     MapTriggers(port, wiiButtons, gcButtons, nunchuckButtons, classicButtons);
+
     // DDR Club Mix / 2nd Mix special layout: these games read the analog
     // stick pushed fully down as a "Select" input (used to change dancer/
     // arrow skin/sequence type and to enter the Left, Right and Shuffle

@@ -17,7 +17,7 @@ static const u32 WIIU_LIST_BACKGROUND = 8;
 
 static const u32 WIIU_MAX_VERTICES = 65536, WIIU_MAX_STRIPS = 16384;
 static const u32 WIIU_MAX_MV_TRIS = 8192, WIIU_MAX_MV_PARAMS = 4096;
-// the TA input of a frame, kept raw (32-byte blocks) and decoded on the worker core (render_gx2.cpp)
+// the TA input of a frame, kept raw (32-byte blocks) and decoded on the intake thread (render_gx2.cpp)
 static const u32 WIIU_MAX_TA_BLOCKS = 65536, WIIU_MAX_TA_EVENTS = 64;
 
 struct WiiuVertex
@@ -71,7 +71,7 @@ struct WiiuFrame
     float fog_density;
     // The TA blocks as the game sent them since its list init, and the list continue / soft reset register
     // writes among them (before block ta_ev[i].at). The emulator thread only collects these (decoding them there
-    // was ~23% of its time in Soulcalibur fights); wiiu_ta_decode turns them into v, s, mv and mp above.
+    // would take a large share of its time); wiiu_ta_decode turns them into v, s, mv and mp above.
     u32 ta[WIIU_MAX_TA_BLOCKS][8] __attribute__((aligned(32)));   // one cache line each (wiiu_ta_input)
     u32 n_ta;
     struct { u32 at, what; } ta_ev[WIIU_MAX_TA_EVENTS];
@@ -83,7 +83,7 @@ struct WiiuFrame
     bool has_bg;
 };
 
-// worker core (or the GX2 thread with the worker idle): decode a published frame's TA blocks, once
+// intake thread (or the GX2 thread for render to texture): decode a published frame's TA blocks, once
 void wiiu_ta_decode(WiiuFrame *f);
 
 // a texture image decoded for a scene, whose GPU copy the GX2 thread invalidates before drawing it

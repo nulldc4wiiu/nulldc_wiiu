@@ -464,7 +464,6 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 
 u32 rdv_FailedToFindBlock_pc;
 
-
 DynarecCodeEntry* rdv_CompilePC()
 {
 	// FRAME_PROF: decode + analyse + ngen_Compile, plus any cache clear this

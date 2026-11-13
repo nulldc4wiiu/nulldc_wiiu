@@ -67,7 +67,6 @@ struct file_TrackInfo
 };
 
 file_TrackInfo iso_tracks[101];
-
 TocInfo gdi_toc;
 SessionInfo gdi_ses;
 u32 iso_tc=0;

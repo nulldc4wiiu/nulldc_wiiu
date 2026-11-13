@@ -65,6 +65,7 @@ void DecodedBlock::Setup(u32 rpc)
 // plain function returns). Word 0 = length.
 // ----------------------------------------------------------------------------
 #define IDLE_KAMUI_MAX 20
+#define IDLE_ANY 0xFFFF   // a word the match doesn't check
 static const u16 idle_kamui[][IDLE_KAMUI_MAX + 1] = {
 	// Hook 7: CvS2, Spider-Man, Project Justice, Power Stone 2, Donald Duck, Rayman 2, Re-Volt, Ecco, DOA2.
 	{ 14, 0x4D0B, 0xE407, 0x63F2, 0x6232, 0x72FF, 0x2322, 0x53F1, 0x6232, 0x32E0, 0x8B03,
@@ -75,13 +76,11 @@ static const u16 idle_kamui[][IDLE_KAMUI_MAX + 1] = {
 	// Hooks 7 and 12, other registers: Quake III Arena, Phantasy Star Online Ver. 2.
 	{ 16, 0x4E0B, 0xE407, 0x4E0B, 0xE40C, 0x62F2, 0x6322, 0x73FF, 0x2232, 0x52F1, 0x6322, 0x33D0, 0x8B03,
 	  0x61F2, 0x6312, 0x2338, 0x8BEF },
-	// Soulcalibur (USA), found with the Wii U census in its fights (~10% of block entries): call a hook, wait
-	// for the frame counter to pass a target or a flag to clear. 8C2247F8..8C22481E; IDLE_ANY marks the two
-	// words of the exit path, which the census didn't show.
+	// Soulcalibur (USA) fights: call a hook, wait for the frame counter to pass a target or a flag to clear.
+	// 8C2247F8..8C22481E; the exit path's two words aren't checked.
 	{ 20, 0xD321, 0x6232, 0x420B, 0x5431, 0xD120, 0x6312, 0xD020, 0x6202, 0xD11B, 0x323C, 0x7201, 0x6312,
-	  0x3326, 0x8B01, 0xFFFF, 0xFFFF, 0xD318, 0x6232, 0x2228, 0x8BEB },
+	  0x3326, 0x8B01, IDLE_ANY, IDLE_ANY, 0xD318, 0x6232, 0x2228, 0x8BEB },
 };
-#define IDLE_ANY 0xFFFF   // a word the match doesn't check
 #define IDLE_KAMUI_FORMS (sizeof(idle_kamui) / sizeof(idle_kamui[0]))
 
 // The form whose loop this 4-opcode block closes, or -1.

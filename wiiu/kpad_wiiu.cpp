@@ -101,9 +101,10 @@ void wiiu_kpad_pointer(int chan, bool on)
     // the sensor bar is powered from the console's side and stays off unless an app asks (the Wii U Menu does when
     // it needs the pointer): without it the remote's camera sees nothing
     if (on)
+    {
         VPADSetSensorBar(VPAD_CHAN_0, TRUE);
-    if (on)
         KPADEnableDPD((KPADChan)chan);
+    }
     else
         KPADDisableDPD((KPADChan)chan);
 }

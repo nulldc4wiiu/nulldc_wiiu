@@ -1,6 +1,6 @@
 /*
  * picker_core - the logic of nullDC's content picker, without any UI: config, a content scan, the menu's state
- * machine and the help text. The UI (../picker_wiiu.cpp: GX2, an 8x8 font, VPAD and KPAD) draws what it says
+ * machine and the help text. The UI (../picker_wiiu.cpp: GX2, a Roboto bitmap font, VPAD and KPAD) draws what it says
  * and feeds it buttons. Plain C, no SDL, no wut UI: it only needs stdio and dirent.
  *
  * Structured like FBNeo's player/picker (picker_cfg, config.txt with content= and autoload=, help/empty screen,
@@ -51,7 +51,6 @@ typedef struct {
     const char *const *skip_dirs;   /* folder names never entered, NULL-terminated, or NULL */
     const picker_entry *extras; /* entries listed first, before the scan, or NULL */
     int n_extras;
-    const char *(*label_for)(const char *name, const char *path);   /* optional "(tag)" after a name, or NULL */
     const char *help_extra;     /* optional extra help line (e.g. where the BIOS or cores go), or NULL */
     const char *warning;        /* optional problem to show first (e.g. "BIOS not found"), or NULL: opens help */
     const char *const *controls;   /* optional second help page: the emulator's controls, NULL-terminated */
@@ -82,7 +81,7 @@ typedef struct {
 /* Reads <data_dir>/config.txt, or creates it with the defaults; makes sure the content folder exists. */
 void picker_core_init(const picker_cfg *cfg);
 
-const char *picker_core_content_dir(void);       /* content= (roms= accepted), or the default */
+const char *picker_core_content_dir(void);       /* content=, or the default */
 const char *picker_core_autoload(void);          /* autoload=, or "" */
 const char *picker_core_config(const char *key); /* any other key=value line of config.txt, or NULL */
 
@@ -90,7 +89,6 @@ const char *picker_core_config(const char *key); /* any other key=value line of 
  * Returns the number of entries. */
 int picker_core_scan(void);
 const picker_entry *picker_core_entry(int i);   /* 0..count-1 */
-const char *picker_core_label(int i);           /* label_for's tag for entry i, or "" */
 
 /* Rows of the list on screen at once (the host's layout); 15 by default. */
 void picker_core_set_visible(int rows);
@@ -101,9 +99,8 @@ int picker_core_input(unsigned buttons, unsigned ms);
 const picker_view *picker_core_view(void);
 const picker_entry *picker_core_selected(void);
 
-/* The header line, and the lines of the help page being shown (page 1: where files go and how to change the
+/* The lines of the help page being shown (page 1: where files go and how to change the
  * folder; page 2: cfg->controls), for any UI. HELP steps through the pages, ACCEPT goes back to the list. */
-const char *picker_core_header(void);
 int picker_core_help_lines(const char **lines, int max);
 int picker_core_help_pages(void);
 
@@ -111,10 +108,6 @@ int picker_core_help_pages(void);
  * page, up/down choose, ACCEPT steps the value and saves config.txt, OPTIONS or HELP goes back. */
 int picker_core_option(int i);
 const char *picker_core_option_value(int i);
-
-/* For the host's content loop: count frames the quit combination is held; nonzero once it's been held ~0.5 s
- * at 60 Hz (for a UI that returns to the menu from a game). */
-int picker_core_hold_to_leave(int combo_held);
 
 #ifdef __cplusplus
 }

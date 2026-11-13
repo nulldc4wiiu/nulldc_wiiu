@@ -10,9 +10,7 @@
 #include "types.h"
 #include "plugs/libwiidrc/wiidrc.h"
 #include "plugs/libsicksaxis/libsicksaxis/sicksaxis.h"
-#include "wii/wii_fastmem.h"
 #include "kpad_wiiu.h"
-#include "wii/wii_audio.h"
 
 // _vmem_reserve() bump-allocates the Dreamcast's RAM, VRAM and ARAM (plus optional caches) from here.
 static const u32 ARENA2_SIZE = 64 * 1024 * 1024;
@@ -175,10 +173,6 @@ extern "C" void wiiu_input_state(u32 *drc, u32 *wpad4)
 int ss_open(struct ss_device *dev) { return -1; }
 int ss_is_connected(struct ss_device *dev) { return 0; }
 int ss_start_reading(struct ss_device *dev) { return -1; }
-
-// fastmem: wiiu/fastmem_wiiu.cpp (wii_fastmem.cpp's page table needs supervisor mode)
-
-// wii_audio.cpp (libogc's AUDIO/ASND) is replaced by audio_wiiu.cpp
 
 extern "C" void wii_boot_log(const char *fmt, ...)
 {

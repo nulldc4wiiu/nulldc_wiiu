@@ -476,7 +476,6 @@ extern "C" int get_flash_chip_preset();   // wii/main.cpp
 static bool s_flash_loaded = false;       // LoadBiosFiles found a flash file
 #ifdef __WIIU__
 void wiiu_flash_sync_time(u8 *flash, u32 rtc);
-u32 GetRTC_now();
 #endif
 
 extern "C" void dc_flash_save_at_exit(void)

@@ -43,14 +43,17 @@ Files under `sd:/wiiu/nulldc/`:
 | `data/dc_boot.bin`, `data/dc_flash.bin` | the Dreamcast BIOS and its flash (you provide them) |
 | `data/vmu_save_A1.bin` ... `D2.bin` | memory cards, one per controller port and slot; created when first used |
 | `<game>/` | one folder per game |
-| `config.txt` | the options page's settings |
+| `config.txt` | the options page's settings; also `content=<folder>` to look for games somewhere else and `autoload=<file>` to start a game without the picker |
 | `wiiu.cfg` | optional settings (below) |
+| `nullDC.cfg` | the emulator core's own settings file |
 | `last_run.txt` | a one-line summary of the last run |
 
 `wiiu.cfg` settings (one `key=value` per line, all optional): `file=<path>` boots that disc without the picker,
-`picker=0` boots the Dreamcast menu when no `file=` is given, `fastmem=0|1` and `rt_width=960|640` override the
-options page, `sdlog=1` writes a log to `sd:/wiiu/nulldc/log.txt`, and `g_<preset>=<n>` sets any of nullDC4Wii's
-presets. The `exp_*` keys override the options page's speed settings individually.
+`picker=0` boots the Dreamcast menu when no `file=` is given, `fastmem=0|1`, `rt_width=960|640` and
+`audio_buffer=<ms>` override the options page, `sdlog=1` writes a log to `sd:/wiiu/nulldc/log.txt`, and
+`g_<preset>=<n>` sets any of nullDC4Wii's presets. The `exp_*` keys override the options page's speed settings one
+by one: `exp_gx2_core` and `exp_aica_thread` take a core (0: the emulator's own, 1: core 0, 2: core 2), and
+`exp_split_convert`, `exp_frame_queue`, `exp_sq_fast`, `exp_fm_x` and `exp_ps_ftrv` take 0 or 1.
 
 ## Optimizations
 

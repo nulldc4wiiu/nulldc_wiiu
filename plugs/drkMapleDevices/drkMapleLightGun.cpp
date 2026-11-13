@@ -173,7 +173,7 @@ void UpdateLightGunState(u32 port)
         kcode[port] &= ~key_CONT_A;
 
     // Off-screen reload trick — A button fires with gun_x/y set to off-screen
-    // Some games (HotD2) use an off-screen shot to reload: the trigger, aimed off screen
+    // Some games (HotD2) use an off-screen shot to reload.
     if (wiiButtons & WPAD_BUTTON_A)
     {
         kcode[port] &= ~key_CONT_A;

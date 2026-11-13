@@ -2,14 +2,13 @@
 //
 // Files live in sd:/wiiu/nulldc/: data/dc_boot.bin and data/dc_flash.bin (required by the core), nullDC.cfg,
 // config.txt (the picker's options) and wiiu.cfg (optional), read once at start:
-//   file=<path>       disc image or .elf to boot instead of showing the game picker (relative to the home folder)
-//   home=<path>       folder with data/ instead of sd:/wiiu/nulldc/, e.g. fs:/vol/content/ for a build that carries
-//                     everything; when it isn't on the SD card nothing is written there
+//   file=<path>       disc image or .elf to boot instead of showing the game picker (relative to sd:/wiiu/nulldc/)
 //   picker=0          boot the BIOS (the Dreamcast menu) when no file= is given, instead of showing the game picker
 //   fastmem=0|1       fast memory access, overriding the options page
 //   rt_width=<n>      the 3D render target's width, 4:3 (default 960; 640 is the Dreamcast's own)
-//   audio_buffer=<ms>, audio_glide=0|1   sound buffering, overriding the options page
-//   exp_*=0|1         the speed switches the options page sets (see README-WiiU.md)
+//   audio_buffer=<ms> the sound queue's target, overriding the options page
+//   exp_*             the speed switches the options page sets: exp_gx2_core and exp_aica_thread take a core
+//                     (0: the emulator's own, 1: core 0, 2: core 2), the others 0|1 (see README-WiiU.md)
 //   g_<name>=<int>    override any int preset from wii/main.cpp, e.g. g_dynarec_preset=0 for the interpreter
 //   sdlog=1           write the log to sd:/wiiu/nulldc/log.txt as well
 // Output (stdout/stderr) goes to OSReport; the SD card gets one summary line per run in last_run.txt.
@@ -41,10 +40,7 @@
 #include "wiiu_codegen.h"
 
 #define NULLDC_HOME "fs:/vol/external01/wiiu/nulldc/"
-// where the BIOS files (data/) and relative file= paths are: the SD card, or with home= in wiiu.cfg somewhere
-// else, such as fs:/vol/content/ for a test build that carries everything and writes nothing to the card
-static char home[256] = NULLDC_HOME;
-static bool sd_writes = true;   // run summary and BIOS flash save; off when home isn't on the SD card
+static const char home[] = NULLDC_HOME;   // the BIOS files (data/) and relative file= paths
 
 extern void SetApplicationPath(const char *path);
 extern int EmuMain(int argc, char *argv[]);
@@ -172,7 +168,7 @@ extern "C" int g_fastmem_preset, g_dynarec_preset, g_idle_shinobi_preset, g_cont
 extern "C" int g_bcache_preset, g_jit_align_preset, g_jit_sbp_preset;
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_sq_fast, g_exp_aica_thread;
-extern int wiiu_exp_trans_min, wiiu_exp_mv_open, wiiu_exp_pcw_gouraud, wiiu_exp_depth_drawn, wiiu_exp_canvas_regs, wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
+extern int wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern "C" int g_exp_ps_ftrv, g_exp_fm_x;   // wii_driver.cpp
 
 struct wiiu_preset { const char *name; int *value; };
@@ -181,12 +177,12 @@ extern const wiiu_preset wiiu_presets[];
 char selectedFilePath[512] = "";
 
 static FILE *log_file;
-static int fastmem = -1;   // wiiu.cfg fastmem=: 0 off, 1 on, 2 Cemu test mode; -1: the picker's option decides
+static int fastmem = -1;   // wiiu.cfg fastmem=: 0 off, 1 on; -1: the picker's option decides
 static bool controller_type_set;   // wiiu.cfg set g_controller_type: it wins over the picker's light gun option
 extern int wiiu_rt_width;   // present_gx2.cpp
 void wiiu_disc_stats();     // disc_cache_wiiu.cpp
-// exp_gx2_core: HOME hung about 2 times in 5 with the emulator running flat out; the spike, with nothing else running,
-// never did. So the emulator parks here, between frames, before the foreground goes
+// exp_gx2_core: the emulator parks here, between frames, before the foreground is released, so GX2 can shut down
+// cleanly (with the emulator running flat out, HOME could hang otherwise)
 static volatile bool emu_pause_req, emu_paused;
 void wiiu_emu_safe_point()
 {
@@ -198,8 +194,8 @@ void wiiu_emu_safe_point()
         emu_paused = false;
     }
 }
-static int audio_buffer_ms, audio_glide;
-void wiiu_audio_tune(int buffer_ms, int glide);
+static int audio_buffer_ms;
+void wiiu_audio_tune(int buffer_ms);
 static bool picker = true;   // wiiu.cfg picker=0: no game picker even without file= (boots the BIOS)
 static volatile bool emu_running, exit_requested, exit_requested_by_core;
 
@@ -230,8 +226,7 @@ static void stop_emulator(OSThread *thread)
     {
         OSJoinThread(thread, nullptr);
         // keep BIOS settings (date, language, sound) and game flash data for the next run
-        if (sd_writes)
-            dc_flash_save_at_exit();
+        dc_flash_save_at_exit();
     }
 }
 
@@ -317,11 +312,8 @@ extern "C" void WiiExitToLoader(void)
 
 static void load_wiiu_cfg()
 {
-    // a build can carry its own cfg in the WUHB content, which wins; otherwise the SD card's
-    const char *path = "fs:/vol/content/wiiu.cfg";
+    const char *path = NULLDC_HOME "wiiu.cfg";
     FILE *f = fopen(path, "r");
-    if (!f)
-        f = fopen(path = NULLDC_HOME "wiiu.cfg", "r");
     if (!f)
         return;
     printf("[wiiu] settings from %s\n", path);
@@ -334,17 +326,12 @@ static void load_wiiu_cfg()
             continue;
         *eq = 0;
         const char *key = line, *value = eq + 1;
-        if (!strcmp(key, "home"))
-        {
-            snprintf(home, sizeof(home), "%s", value);
-            sd_writes = strncmp(home, "fs:/vol/external01/", 19) == 0;
-        }
-        else if (!strcmp(key, "file"))
+        if (!strcmp(key, "file"))
             snprintf(selectedFilePath, sizeof(selectedFilePath), "%s%s", value[0] == '/' || strchr(value, ':') ? "" : home, value);
         else if (!strcmp(key, "picker"))
             picker = atoi(value) != 0;
         else if (!strcmp(key, "fastmem"))
-            fastmem = atoi(value);
+            fastmem = atoi(value) != 0;
         else if (!strcmp(key, "rt_width"))
         {
             wiiu_rt_width = atoi(value);   // the 3D render target's width (4:3): 960 by default, 640 native
@@ -352,8 +339,6 @@ static void load_wiiu_cfg()
         }
         else if (!strcmp(key, "audio_buffer"))
             audio_buffer_ms = atoi(value);
-        else if (!strcmp(key, "audio_glide"))
-            audio_glide = atoi(value);
         else if (!strcmp(key, "exp_sq_fast"))
             g_exp_sq_fast = atoi(value);
         else if (!strcmp(key, "exp_aica_thread"))
@@ -368,16 +353,6 @@ static void load_wiiu_cfg()
             g_exp_fm_x = atoi(value);
         else if (!strcmp(key, "exp_ps_ftrv"))
             g_exp_ps_ftrv = atoi(value);
-        else if (!strcmp(key, "exp_depth_drawn"))
-            wiiu_exp_depth_drawn = atoi(value);
-        else if (!strcmp(key, "exp_pcw_gouraud"))
-            wiiu_exp_pcw_gouraud = atoi(value);
-        else if (!strcmp(key, "exp_trans_min"))
-            wiiu_exp_trans_min = atoi(value);
-        else if (!strcmp(key, "exp_mv_open"))
-            wiiu_exp_mv_open = atoi(value);
-        else if (!strcmp(key, "exp_canvas_regs"))
-            wiiu_exp_canvas_regs = atoi(value);
         else if (!strcmp(key, "sdlog") && atoi(value))
             log_file = fopen(NULLDC_HOME "log.txt", "w");   // full log on the SD card too (many small writes)
         else
@@ -401,8 +376,6 @@ static void load_wiiu_cfg()
 static void write_summary(int seconds)
 {
     printf("[wiiu] run ended after %d s\n", seconds);
-    if (!sd_writes)
-        return;
     if (FILE *f = fopen(NULLDC_HOME "last_run.txt", "w"))
     {
         fprintf(f, "file '%s' dynarec %d: %d s, vblanks %u renders %u", selectedFilePath, g_dynarec_preset, seconds,
@@ -425,8 +398,8 @@ static int emu_thread(int argc, const char **argv)
     return rv;
 }
 
-// exp_gx2_core: WHB's foreground callbacks run on the main thread, away from GX2, and HOME hung that way. So they're
-// dropped, and this thread shuts graphics down itself before the release and starts it again after
+// exp_gx2_core: ProcUI's foreground callbacks would run on the main thread, away from GX2, so they're dropped, and the
+// GX2 thread shuts graphics down itself before the release and starts it again after
 int wiiu_exp_gx2_core;
 bool wiiu_gfx_down;   // shut down for the background: wiiu_gx2_shutdown leaves it
 static volatile bool proc_running = true, gfx_want_pause, gfx_parked, app_done;
@@ -494,9 +467,13 @@ int main(int argc, char **argv)
     // the Shinobi idle-loop rule stalls the BIOS on its boot logo with the JIT (seen in Cemu); wiiu.cfg can
     // turn it back on with g_idle_shinobi_preset=1
     g_idle_shinobi_preset = 0;
-    // console-tested defaults (Soulcalibur fights 86% -> 141% in bench, 99% in real play); wiiu.cfg can still turn any of
-    // them off. The GX2 and sound threads go on a core the JIT isn't on: 0 on a console, 2 in Cemu, whose codegen core is 0
-    // The options page can turn them off (config.txt, read here because the threads start before the picker runs).
+    // Threads and cores (console; in Cemu the codegen core is 0, so cores 0 and 2 swap):
+    //   core 1, the codegen core: the emulator (SH4 JIT), and the main thread, which only runs ProcUI
+    //   core 0: the GX2 thread, the AICA mixer, the vertex convert helper and the disc reader
+    //   core 2: TA intake (decode, convert, textures), the GX2 worker and the watchdog
+    // GX2 work is kept off the JIT core because it took a large share of it. These are the speed options' defaults;
+    // the options page can turn them off (config.txt, read here because the threads start before the picker runs),
+    // and wiiu.cfg's exp_* keys set them one by one.
     {
         bool gfx_core = true, sound_core = true, jit_fast = true, smooth = true, code_check = true;
         int buffer = 100;
@@ -510,7 +487,6 @@ int main(int argc, char **argv)
         wiiu_exp_frame_queue = smooth;
         g_jit_sbp_preset = code_check ? 3 : 1;   // 3: MvC2's module cache too
         audio_buffer_ms = buffer;
-        audio_glide = 1;
         printf("[wiiu] speed options: graphics core %d, sound core %d, faster code %d, smooth frames %d, code check %d, "
                "sound buffer %d\n", gfx_core, sound_core, jit_fast, smooth, code_check, buffer ? buffer : 46);
     }
@@ -530,8 +506,8 @@ int main(int argc, char **argv)
             OSSleepTicks(OSMillisecondsToTicks(10));
         proc_running = false;
         printf("[wiiu] exit: ProcUI says exit\n");
-        // no OSJoinThread: the GX2 thread's exit hung once (console, 2026-11-06), and that left the app stuck on the way
-        // back to the menu. Wait a while, then leave regardless
+        // no OSJoinThread: if the GX2 thread doesn't finish, leave after 3 s anyway rather than stay stuck on the way
+        // back to the menu
         for (int i = 0; i < 3000 && !app_done; i++)
             OSSleepTicks(OSMillisecondsToTicks(1));
         printf("[wiiu] exit: GX2 thread %s\n", app_done ? "finished" : "NOT FINISHED, leaving anyway");
@@ -555,7 +531,7 @@ static int app_main()
         {
             // quit from the picker (+ and -) or HOME, Close: ask for the Wii U Menu if nobody has yet, then keep serving
             // ProcUI (the HOME and release handling need GX2 up) until it says exit. Shutting GX2 down at once, with
-            // nothing asking for the menu, left the app frozen and HOME dead (console, 2026-11-08)
+            // nothing asking for the menu, would leave the app frozen and HOME dead
             printf("[wiiu] exit: left the picker, asking for the Wii U Menu\n");
             if (wiiu_app_running())
                 request_exit();
@@ -568,7 +544,7 @@ static int app_main()
             return 0;
         }
     }
-    wiiu_audio_tune(audio_buffer_ms, audio_glide);
+    wiiu_audio_tune(audio_buffer_ms);
     wiiu_audio_init();
 
     void *codegen_area = nullptr;
@@ -576,17 +552,14 @@ static int app_main()
     OSGetCodegenVirtAddrRange(&codegen_area, &codegen_size);
     printf("[wiiu] nullDC4Wii native Wii U build; codegen %p size 0x%x core %u\n", codegen_area, codegen_size, OSGetCodegenCore());
 
-    marker("logging");
+    marker("codegen");
     extern u8 *CodeCache;
     CodeCache = (u8 *)wiiu_codegen_alloc(CODE_SIZE, "sh4 jit");
-    if (sd_writes)
-    {
-        mkdir("fs:/vol/external01/wiiu", 0777);
-        mkdir(NULLDC_HOME, 0777);
-        mkdir(NULLDC_HOME "data", 0777);
-    }
+    mkdir("fs:/vol/external01/wiiu", 0777);
+    mkdir(NULLDC_HOME, 0777);
+    mkdir(NULLDC_HOME "data", 0777);
     SetApplicationPath(home);
-    printf("[wiiu] home %s%s\n", home, sd_writes ? "" : " (nothing written to the SD card)");
+    printf("[wiiu] home %s\n", home);
     {
         extern u32 GetRTC_now();
         time_t now = time(NULL);
@@ -595,13 +568,12 @@ static int app_main()
         printf("[wiiu] clock: time %lld = %04d-%02d-%02d %02d:%02d, isdst %d, DC RTC %08x\n", (long long)now,
                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_isdst, GetRTC_now());
     }
-    // the picker's options (config.txt), unless wiiu.cfg (test builds) set them: fastmem (fastmem_wiiu.cpp; 2 is the
-    // Cemu test mode) and the light gun (drkMapleLightGun.cpp) on every port
+    // the picker's options (config.txt), unless wiiu.cfg sets them: fastmem (fastmem_wiiu.cpp) and the light gun
+    // (drkMapleLightGun.cpp) on every port
     {
         bool opt_fastmem = true, opt_lightgun = false, opt_keep_pitch = true;
         int opt_width = 960;
-        if (sd_writes)
-            wiiu_picker_options(home, &opt_fastmem, &opt_lightgun, &opt_width, &opt_keep_pitch);
+        wiiu_picker_options(home, &opt_fastmem, &opt_lightgun, &opt_width, &opt_keep_pitch);
         g_fastmem_preset = fastmem >= 0 ? fastmem : opt_fastmem;
         if (!controller_type_set)
             g_controller_type = opt_lightgun ? 1 : 0;
@@ -642,9 +614,9 @@ static int app_main()
     OSThreadAttributes affinity = core == 0 ? OS_THREAD_ATTRIB_AFFINITY_CPU0 :
                                   core == 2 ? OS_THREAD_ATTRIB_AFFINITY_CPU2 : OS_THREAD_ATTRIB_AFFINITY_CPU1;
     emu_running = true;
-    // one step below the main thread, which shares the codegen core on a console: the emulator never yields,
-    // and CafeOS doesn't time-slice threads of equal priority, so at the same priority the main thread (video,
-    // status, HOME) never ran again. The main thread mostly waits for VSync, so the emulator still gets the core.
+    // one step below the thread starting it (the GX2 thread, or with the graphics core off the main thread on the
+    // codegen core): the emulator never yields, and CafeOS doesn't time-slice threads of equal priority, so at the same
+    // priority a thread sharing its core would never run again. The others mostly wait, so the emulator gets the core.
     const int emu_priority = OSGetThreadPriority(OSGetCurrentThread()) + 1;
     printf("[wiiu] emulator thread priority %d (main %d)\n", emu_priority, emu_priority - 1);
     if (!OSCreateThread(&thread, emu_thread, 0, nullptr, stack + stack_size, stack_size, emu_priority, affinity))

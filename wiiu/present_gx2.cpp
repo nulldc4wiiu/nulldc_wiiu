@@ -1,5 +1,10 @@
-// Video output on the Wii U. The main thread owns GX2 (wiiu_gx2_*). It renders the latest 3D frame the emulator
-// thread published (wiiu_frame_publish, built from the TA by render_gx2.cpp) once, into a 960x720 off-screen
+// Video output on the Wii U. Threads (main_wiiu.cpp has the whole map): the SH4 JIT runs on the codegen core (1 on a
+// console) and everything here keeps off it. The GX2 thread owns GX2 (wiiu_gx2_*; on core 0 with the "graphics core"
+// option, else the main thread on the codegen core). The intake thread on core 2 turns each published frame into a
+// scene (TA decode, vertex conversion with a helper on core 0, textures); the GX2 thread only draws scenes. In Cemu the
+// codegen core is 0, so cores 0 and 2 swap.
+// The GX2 thread renders the latest 3D frame the emulator thread published (wiiu_frame_publish, built from the TA by
+// render_gx2.cpp) once, into a 960x720 off-screen
 // target, and shows that, 4:3 pillarboxed, on the TV and the GamePad; when the game hasn't rendered in 3D for a
 // second it shows the scanned-out framebuffer (wiiu_fb_capture) instead. Textures come from texture_gx2.cpp.
 // Modifier volumes from the opaque modifier list shade the opaque and punch-through polygons that ask for it
@@ -216,23 +221,7 @@ WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames)
     return next;
 }
 
-// main thread: show a w x h RGBA image (bytes R, G, B, A) through the framebuffer path, as the game picker does
-// before the emulator runs; the next wiiu_gx2_frame() puts it on screen
-void wiiu_gx2_show_rgba(const u32 *px, u32 w, u32 h)
-{
-    if (!lock_ready)
-        return;
-    OSFastMutex_Lock(&shared_lock);
-    const u32 cw = w < FB_MAX_W ? w : FB_MAX_W, ch = h < FB_MAX_H ? h : FB_MAX_H;
-    for (u32 y = 0; y < ch; y++)
-        memcpy(&shared_rgba[y * FB_MAX_W], &px[y * w], cw * 4);
-    shared_w = cw;
-    shared_h = ch;
-    shared_seq = shared_seq + 1;
-    OSFastMutex_Unlock(&shared_lock);
-}
-
-// ---- main thread (GX2) ----------------------------------------------------------------------------------
+// ---- GX2 thread -----------------------------------------------------------------------------------------
 
 // the picker's image, sharper than the game framebuffer path allows; it only exists while the picker is up
 static GX2Texture ui_tex;
@@ -273,11 +262,11 @@ void wiiu_gx2_hide_ui()
 
 static WHBGfxShaderGroup group, geo;
 struct GpuVertex { float x, y, z, w; u32 col, spc; float u, v; };
-// three frame slots (vertices, indices, scene): one the GPU draws, one ready, one the intake thread fills
+// four frame slots (vertices, indices, scene): one the GPU draws, up to two ready, one the intake thread fills
 static const int SLOTS = 4;
 static GX2RBuffer geo_buf[SLOTS], rtt_buf;
 // each strip as an indexed triangle list (convert_frame), so draw_scene can send a run of strips with the same
-// state as one draw: Soulcalibur has ~3000 strips a frame, and one GX2DrawEx each kept the GPU from 60 Hz
+// state as one draw (Soulcalibur has ~3000 strips a frame: one draw each is too many for 60 Hz)
 static const u32 IDX_MAX = WIIU_MAX_VERTICES * 3;
 static GX2RBuffer idx_buf[SLOTS], rtt_idx_buf;
 static struct GpuVertex *slot_v[SLOTS];
@@ -287,7 +276,6 @@ static u16 draw_strip_tex[WIIU_MAX_STRIPS];   // the committed scene's strip -> 
 static GX2Texture *draw_tex;                  // and its table (inside the scene, which isn't rewritten while drawn)
 static GX2Texture white_tex;                  // for a textured strip whose texture didn't fit (drawn white)
 static u32 draw_calls, draw_strips;      // for the perf report: how well strips batch
-int wiiu_gx2_batch = 1;                  // gx2_batch=0: one draw per strip, as before batching
 enum { BRK_CLIP, BRK_TEX, BRK_SMP, BRK_DEPTH, BRK_CULL, BRK_BLEND, BRK_MODE, BRK_SHADE, BRK_CLAMP, BRK_GAP, BRK_COUNT };
 static u32 run_breaks[BRK_COUNT];        // what ended each run of strips
 static u32 strip_idx_owner;              // which index buffer strip_idx[] describes (its address), and how many
@@ -310,9 +298,8 @@ static float trans_key[WIIU_MAX_STRIPS];
 static bool have_3d;
 static float canvas_w = 640.0f, canvas_h = 480.0f;   // of the screen frame being drawn
 // a new screen frame was converted and isn't in the render target yet; without one the target keeps the last
-// picture and only the blits run (on the console the GX2 thread shares core 1 with the emulator)
+// picture and only the blits run
 static bool scene_dirty;
-int wiiu_exp_trans_min = 1;
 static u32 u_screen_vs_loc = ~0u, u_screen_ps_loc = ~0u;
 static float draw_screen[4];        // the committed scene's u_screen (the geo shaders' mode word; 0: clip-space positions)
 static inline u32 vertex_bytes() { return sizeof(GpuVertex); }
@@ -326,10 +313,10 @@ static u16 fog_table[128], next_fog_table[128];   // in the texture, and of the 
 static u32 fog_col_ram, fog_col_vert, fog_clamp_min, fog_clamp_max;
 static float fog_density;
 
-// What convert_frame makes of a frame, besides the vertices and indices in the GX2 buffers. The worker converts
-// the next screen frame into one of these while the GX2 thread waits for the flip (pipelining: converting in the
-// frame's own 16.7 ms held Soulcalibur fights at 30 Hz); commit() copies a finished one into the statics above,
-// which draw_scene uses. Render-to-texture frames have their own, so they don't disturb the screen frame's.
+// What convert_frame makes of a frame, besides the vertices and indices in the GX2 buffers. The intake thread converts
+// the next screen frame into one of these while the GX2 thread draws the last one; commit() copies a finished one
+// into the statics above, which draw_scene uses. Render-to-texture frames have their own, so they don't disturb the
+// screen frame's.
 struct Scene
 {
     WiiuStrip strips[WIIU_MAX_STRIPS];
@@ -387,7 +374,7 @@ static void update_fog_texture(const u16 *table)
 }
 
 // off-screen render target for the 3D frame: 1.5x the Dreamcast's 640x480, or rt_width= in wiiu.cfg (640 halves
-// the GPU's pixels: Soulcalibur fights took ~12 ms of GPU per scene at 960x720)
+// the GPU's pixels)
 int wiiu_rt_width = 960;
 static u32 RT_W = 960, RT_H = 720;
 static GX2ColorBuffer rt_color;
@@ -607,14 +594,11 @@ static GX2BlendMode blend_mode(u32 instr, bool src)
 
 // copy the published frame into a GX2 vertex buffer, in clip space: x, y from Dreamcast pixels, w from 1/w, and
 // depth = 1/w scaled by the frame's largest 1/w (see depth_func)
-struct Scene;
 static void convert_frame(const WiiuFrame *f, struct GpuVertex *out, u32 *idx, float width, float height, Scene *sc);
 static void log_frame(const WiiuFrame *f, u32 frames_taken);
 
 // ---- worker core ---------------------------------------------------------------------------------------
-// Vertex conversion and texture decoding are CPU work that would otherwise run on the GX2 thread, which on a
-// console shares core 1 with the emulator. A worker on core 2 does it while the GX2 thread waits, so core 1 is
-// the emulator's in the meantime.
+// The worker (core 2) converts the scanned-out framebuffer for the 2D path (convert_fb), off the GX2 thread.
 static OSThread worker;
 static OSEvent worker_go, worker_done;
 static void (*worker_job)(void *);
@@ -680,17 +664,16 @@ static void apply_fog_table() { update_fog_texture(next_fog_table); }
 // ---- intake: frames become scenes as soon as they're published --------------------------------------------
 //
 // The game writes a frame's textures, starts the render, and soon reuses texture memory for the next frame (a
-// PVR has read them within a few ms; MvC2 streams its character sprites that way). Building scenes on the GX2
-// thread's schedule (at its next vsync, plus the conversion) decoded many sprites from the next frame's data:
-// jumbled sprites on a console. Now the intake thread (core 2) wakes on every published screen frame and builds
-// its scene right away: TA decode, vertex conversion, and each textured strip's texture decoded and its
-// descriptor copied into the scene. The GX2 thread only adopts the newest ready scene and draws it.
+// PVR has read them within a few ms; MvC2 streams its character sprites that way), so a scene built at the GX2
+// thread's next vsync would decode sprites from the next frame's data. The intake thread (core 2) wakes on every
+// published screen frame and builds its scene right away: TA decode, vertex conversion, and each textured strip's
+// texture decoded and its descriptor copied into the scene. The GX2 thread adopts the oldest ready scene and draws it.
 //
 // decode_lock covers everything one builder uses at a time (the TA parser, the texture cache, convert_frame's
 // scratch): the intake thread, and the GX2 thread for render-to-texture frames, which it builds and draws itself.
 static OSFastMutex decode_lock, slot_lock;
-// exp_frame_queue: the emulator renders in bursts (it paces on the audio queue), so two scenes can finish within one
-// vsync, and with one waiting slot the first was thrown away: 60 renders a second became 50 shown. Two can wait instead
+// Smooth frames (exp_frame_queue): the emulator renders in bursts (it paces on the audio queue), so two scenes can
+// finish within one vsync; with one waiting slot the first would be thrown away. Two can wait instead
 int wiiu_exp_frame_queue;
 static int ready_q[2], n_ready;
 static int slot_drawing = -1;   // under slot_lock; the intake thread fills any other slot
@@ -851,8 +834,9 @@ static void invalidate_textures(const Scene &sc)
             GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, sc.inv[i].image, sc.inv[i].bytes);
 }
 
-// GX2 thread, each vsync: the newest ready scene becomes the one drawn (the GPU finished the previous one in the
-// last vsync's WHBGfxFinishRender, so its slot is the intake thread's again)
+// GX2 thread, each vsync: the oldest ready scene becomes the one drawn, so with Smooth frames both queued scenes are
+// shown (the GPU finished the previous one in the last vsync's WHBGfxFinishRender, so its slot is the intake
+// thread's again)
 static void adopt_scene()
 {
     OSFastMutex_Lock(&slot_lock);
@@ -880,9 +864,11 @@ static void adopt_scene()
     last_3d_vblank = wiiu_vblanks;
 }
 
-// the frame's vertices into clip space (from w x h Dreamcast pixels) at out, its strips, volumes, translucent
-// order and fog values into the statics draw_scene uses. CPU work only, so it can run on the worker core; the
-// fog table texture is the GX2 thread's (apply_fog_table)
+// ---- convert (intake thread, a helper on the other core) ----------------------------------------------------
+
+// the frame's vertices into clip space (from w x h Dreamcast pixels) at out; convert_frame puts its strips, volumes,
+// translucent order and fog values into the scene. CPU work only; the fog table texture is the GX2 thread's
+// (apply_fog_table)
 static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 to, float hw, float hh, float scale)
 {
     for (u32 i = from; i < to; i++)
@@ -933,8 +919,6 @@ static void start_conv_helper()
         conv_helper_up = true;
     }
 }
-int wiiu_exp_pcw_gouraud = 1;   // exp_pcw_gouraud=0: Gouraud from the ISP word, as before
-int wiiu_exp_mv_open = 1;   // exp_mv_open=0: every volume by parity, as before
 // inside convert_frame: infinite-vertex fixes, this core's vertex half, waiting for the helper's half, modifier volumes
 // and copies, the index lists, the translucent sort; and the vertices, strips and indices it handled
 static OSTime conv_ticks[6];
@@ -948,8 +932,8 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     conv_vertices += f->nv;
     conv_strips += f->ns;
     lap(0);
-    // exp_split_convert: this is the intake core's biggest stage (7 of 13.8 ms in a Soulcalibur fight, console), and each
-    // vertex stands alone, so the helper core takes the second half
+    // exp_split_convert (the "graphics core" option): this is the intake core's biggest stage, and each vertex stands
+    // alone, so the helper core takes the second half
     sc->screen[0] = 0.0f;
     sc->screen[1] = 1.0f / hw;
     sc->screen[2] = 1.0f / hh;
@@ -1017,21 +1001,20 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     // the PVR sorts translucent polygons by depth itself unless pre-sort mode is on; approximate that per strip,
     // smallest (farthest) first, keeping submission order for ties. The key is the strip's smallest 1/w, its
     // farthest point, as Flycast keys each triangle: a mean let MvC2's cloud layer, which runs from the horizon to
-    // right in front of the camera, sort as nearest and draw over the character tiles (exp_trans_min=0: the mean)
+    // right in front of the camera, sort as nearest and draw over the character tiles
     sc->trans_count = 0;
     for (u32 i = 0; i < f->ns; i++)
     {
         const WiiuStrip &st = f->s[i];
         if (st.list != 2)
             continue;
-        float sum = 0.0f, lo = 1e30f;
+        float lo = 1e30f;
         for (u32 k = 0; k < st.count; k++)
         {
             const float z = f->v[st.first + k].z;
-            sum += z;
             lo = z < lo ? z : lo;
         }
-        trans_key[i] = wiiu_exp_trans_min ? lo : sum / st.count;
+        trans_key[i] = lo;
         sc->trans_order[sc->trans_count++] = i;
     }
     if (!(f->isp_feed_cfg & 1))
@@ -1044,6 +1027,8 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     sc->fog_clamp_max = f->fog_clamp_max;
     sc->fog_density = f->fog_density;
 }
+
+// ---- draw (GX2 thread) ---------------------------------------------------------------------------------
 
 // the statics draw_scene reads, from a converted scene (a few hundred KB of copying at most)
 static void commit(const Scene *sc)
@@ -1148,12 +1133,12 @@ static void draw_modvols()
         const WiiuModVol &m = modvols[i];
         if (m.count)
         {
-            // the volume's own cull mode, as Flycast: volumes may leave out the faces culling would drop
+            // volumes are drawn unculled: they may leave out the faces culling would drop
             GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
             // GREATER passes where the volume surface is in front of the scene. A closed volume flips bit 0x01 (an odd
             // count of faces in front: inside); an open one or a quad (PCW Volume bit clear on a header with a mode) sets
             // it wherever any face is in front, as Flycast does. Parity on Soulcalibur's open shadow volumes tore them
-            const bool open = wiiu_exp_mv_open && !m.last && (m.mode == 1 || m.mode == 2);
+            const bool open = !m.last && (m.mode == 1 || m.mode == 2);
             const GX2StencilFunction op = open ? GX2_STENCIL_FUNCTION_REPLACE : GX2_STENCIL_FUNCTION_INV;
             GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_GREATER, TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS,
                                       op, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP,
@@ -1181,9 +1166,7 @@ static void draw_modvols()
     GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
 }
 
-// render the converted frame (vertices in vbuf) into the top-left w x h of a colour and depth buffer; tile
-// clip rectangles are scaled by tile_x, tile_y (the size of a 32-pixel tile in target pixels)
-// target and clears: GX2 clears can't go in a display list
+// target and clears
 static void scene_setup(GX2ColorBuffer *color, GX2DepthBuffer *depth, u32 width, u32 height)
 {
     GX2SetContextState(rt_ctx);
@@ -1200,7 +1183,7 @@ static void scene_setup(GX2ColorBuffer *color, GX2DepthBuffer *depth, u32 width,
     GX2SetScissor(0, 0, width, height);
 }
 
-// all of a scene's state and draws: from the GX2 thread, or recorded into a display list on the intake thread
+// all of a scene's state and draws
 static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf, float tile_x, float tile_y)
 {
     GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
@@ -1387,7 +1370,7 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
             // Gouraud from the parameter control word, as the TA does (it copies PCW's shading bits into the ISP word);
             // the ISP word's own bit, which games may leave clear, flat-shaded Shenmue's faces and MSR's buildings
             const u32 fog = pass == WIIU_LIST_BACKGROUND ? 2 : tsp.FogCtrl,
-                      gouraud = pass == WIIU_LIST_BACKGROUND || (wiiu_exp_pcw_gouraud ? pcw.Gouraud : isp.Gouraud);
+                      gouraud = pass == WIIU_LIST_BACKGROUND || pcw.Gouraud;
             const u32 shade_key = tsp.ShadInstr | fog << 2 | gouraud << 4;
             if (shade_key != last_shade)
                 flush(BRK_SHADE);
@@ -1406,7 +1389,7 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
             {
                 // runs stay under 64K indices: longer single draws crashed Cemu's index handling at Soulcalibur's
                 // attract sequence (LatteDrawGL_prepareIndicesWithGPUCache)
-                if (wiiu_gx2_batch && run_count && run_first + run_count == first && run_count + n_idx <= 0xFFFF)
+                if (run_count && run_first + run_count == first && run_count + n_idx <= 0xFFFF)
                 {
                     run_count += n_idx;
                     run_strips++;
@@ -1453,6 +1436,8 @@ static void scene_end(GX2ColorBuffer *color)
                   color->surface.imageSize);
 }
 
+// render the converted frame (vertices in vbuf) into the top-left w x h of a colour and depth buffer; tile
+// clip rectangles are scaled by tile_x, tile_y (the size of a 32-pixel tile in target pixels)
 static void draw_scene(GX2ColorBuffer *color, GX2DepthBuffer *depth, u32 width, u32 height, GX2RBuffer *vbuf,
                        GX2RBuffer *ibuf, float tile_x, float tile_y)
 {
@@ -1614,8 +1599,9 @@ static void blit(GX2Texture *t)
     GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
 }
 
-// draw the newest 3D frame, or the scanned-out framebuffer when there has been no 3D for a second; waits for VSync
-// where the GX2 thread's time goes (on the console it shares core 1 with the emulator), reported every 5 s
+// ---- time report and frame loop ----------------------------------------------------------------------
+
+// where the GX2 thread's time goes, reported every 5 s
 static struct
 {
     OSTime start, rtt, convert, draw, present, finish, flip;
@@ -1678,7 +1664,7 @@ static void perf_report()
 volatile const char *wiiu_gx2_stage = "init";
 volatile u32 wiiu_gx2_frames_done;
 
-
+// draw the newest 3D frame, or the scanned-out framebuffer when there has been no 3D for a second; waits for VSync
 void wiiu_gx2_frame()
 {
     if (!gx2_ready)

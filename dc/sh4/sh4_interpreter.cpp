@@ -399,14 +399,8 @@ int FASTCALL UpdateSystem()
 // exactly that dispatch — so calling _no_event() then (conditionally)
 // _handle_event() is behaviourally identical to a single UpdateSystem().
 // -------------------------------------------------------------------------
-#ifdef __WIIU__
-void aica_poll_ints();   // plugs/nullAICA/aica.cpp: interrupts the sound thread raised
-#endif
 int FASTCALL UpdateSystem_no_event()
 {
-#ifdef __WIIU__
-	aica_poll_ints();
-#endif
 	CCALL(CC_TIMESLICE);
 	if (!(update_cnt & (s_medium_period - 1)))
 		MediumUpdate();

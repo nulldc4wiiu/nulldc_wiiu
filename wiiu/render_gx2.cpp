@@ -1,6 +1,6 @@
 // The core's renderer interface (plugs/drkPvr/gxRend.h) for the Wii U. The emulator thread only collects the TA
 // input (wiiu_ta_input) and raises its end-of-list interrupts; at StartRender the frame is handed to the GX2
-// thread (present_gx2.cpp), whose worker core runs the TA parser (FifoSplitter) over it into FrameDecoder, which
+// side (present_gx2.cpp), whose intake thread runs the TA parser (FifoSplitter) over it into FrameDecoder, which
 // records each polygon strip with its PVR state words and vertices in screen space.
 #include "plugs/drkPvr/gxRend.h"
 #include "plugs/drkPvr/regs.h"
@@ -34,11 +34,11 @@ static bool list_init_since_render;
 // SPG.cpp raises the render-done interrupts when these count down; games wait for them between frames
 extern s32 render_end_pending_cycles, render_isp_pending_cycles, render_tsp_pending_cycles, render_vd_pending_cycles;
 extern "C" int get_render_delay_preset();
-extern "C" int get_canvas_width_preset(), get_y_scaler_preset(), get_h_scaler_preset();
+extern "C" int get_y_scaler_preset(), get_h_scaler_preset();
 static WiiuFrame *build = &frames[0];   // emulator thread: the frame collecting TA input
-static WiiuFrame *dec;                  // worker (wiiu_ta_decode): the frame FrameDecoder writes
+static WiiuFrame *dec;                  // intake thread (wiiu_ta_decode): the frame FrameDecoder writes
 // the TA scanner (below): what FrameDecoder will make of the frame, counted as it arrives: StartRender times the render-done interrupt
-// by them (the decoded counts aren't known until the worker runs)
+// by them (the decoded counts aren't known until the intake thread decodes)
 static u32 scan_vertices, scan_strips;
 
 // ---- colour conversion: everything ends up as bytes R, G, B, A in memory --------------------------------
@@ -50,8 +50,6 @@ static inline u32 from_argb(u32 c) { return rgba_bytes((c >> 16) & 0xFF, (c >> 8
 static inline u32 from_float(float a, float r, float g, float b) { return rgba_bytes(clamp255(r), clamp255(g), clamp255(b), clamp255(a)); }
 // 16-bit UVs are the top half of a float
 static inline float uv16(u16 v) { union { u32 u; float f; } x = { (u32)v << 16 }; return x.f; }
-
-extern int wiiu_exp_trans_min;   // present_gx2.cpp
 
 struct FrameDecoder
 {
@@ -308,16 +306,15 @@ static FifoSplitter<FrameDecoder> TileAccel;
 // x_scaler preset) submit 1280 wide for 2:1 supersampling
 static float fb_scale_x = 1.0f, fb_scale_y = 1.0f;
 
-// the canvas the TA geometry is in, as gxRend.cpp sizes it (same presets): the video mode's scale, a forced
-// width for 240p games that render narrow, the vertical scaler factor and the pixel-doubling 320-wide modes
-int wiiu_exp_canvas_regs = 1;   // exp_canvas_regs=0: always 640x480, as before
+// the canvas the TA geometry is in: the framebuffer's size, the vertical scaler factor and the pixel-doubling
+// 320-wide modes (gxRend.cpp's presets)
 static void canvas(float &w, float &h)
 {
     // the framebuffer the video output reads (FB_R_SIZE, one field when interlaced) is what the game rendered for:
     // 320 wide (Gunbird 2) or a progressive 240 lines get the canvas they were drawn on, not the top-left of 640x480
     const u32 size = FB_R_SIZE, depth = FB_R_CTRL.fb_depth, bpp = depth == 2 ? 3 : depth == 3 ? 4 : 2;
     const u32 fw = ((size & 0x3FF) + 1) * 4 / bpp, fh = ((size >> 10) & 0x3FF) + 1, inter = SPG_CONTROL.interlace;
-    if (wiiu_exp_canvas_regs && FB_R_CTRL.fb_enable)
+    if (FB_R_CTRL.fb_enable)
     {
         fb_scale_x = fw <= 320 ? 0.5f : 1.0f;
         fb_scale_y = !inter && fh <= 288 ? 0.5f : 1.0f;
@@ -331,20 +328,13 @@ static void canvas(float &w, float &h)
     }
     w = 640.0f * fb_scale_x;
     h = 480.0f * fb_scale_y;
-    bool forced = false;
-    const int forced_w = get_canvas_width_preset();
-    if (!wiiu_exp_canvas_regs && forced_w >= 320 && forced_w <= 1280 && fb_scale_y == 0.5f)
-    {
-        w = (float)forced_w;
-        forced = true;
-    }
     if (get_y_scaler_preset() == 1)
     {
         const float vsf = (SCALER_CTL.full & 0xFFFF) / 1024.0f;
         if (vsf >= 0.25f && vsf <= 4.0f && (vsf < 0.999f || vsf > 1.001f))
             h *= vsf;
     }
-    if (get_h_scaler_preset() && !forced && ((VO_CONTROL >> 8) & 1))
+    if (get_h_scaler_preset() && ((VO_CONTROL >> 8) & 1))
         w *= 0.5f;
 }
 
@@ -463,7 +453,7 @@ void StartRender()
 {
     wiiu_renders++;
     // render-done timing, as gxRend.cpp schedules it for each render_delay preset
-    // as the scanner counted them: the geometry itself is decoded later, on the worker
+    // as the scanner counted them: the geometry itself is decoded later, on the intake thread
     const u32 vertices = scan_vertices, strips = scan_strips;
     const int mode = get_render_delay_preset();
     if (mode == 1)
@@ -611,8 +601,7 @@ void wiiu_ta_input(const u32 *data, u32 blocks)
         scan_block(data);
         if (build->n_ta < WIIU_MAX_TA_BLOCKS)
         {
-            // each block fills a whole cache line: dcbz claims it without reading memory first (the plain copy
-            // missed on every line of a 2 MB buffer: the store queue path stayed at 16-19% after deferring)
+            // each block fills a whole cache line: dcbz claims it without reading memory first
             u32 *dst = build->ta[build->n_ta];
             __asm__ volatile("dcbz 0,%0" : : "r"(dst) : "memory");
             for (int k = 0; k < 8; k++)
@@ -634,7 +623,7 @@ void FASTCALL wiiu_sqw_fast(u32 dst)
     const u32 address = (dst & 0x03FFFFE0) | (qacr << 26);
     if (((address >> 26) & 7) != 4 || (address & 0x1FFFFFF) >= 0x800000)
     {
-        // exp_sq_fast: 32 bytes to RAM or 64-bit VRAM needn't go through the generic block write and memmove
+        // exp_sq_fast (the "faster code" option): 32 bytes to RAM or 64-bit VRAM needn't go through the generic block write and memmove
         const u32 area = (address >> 26) & 7;
         u8 *d = !g_exp_sq_fast ? nullptr : area == 3 ? &mem_b[address & RAM_MASK] :
                 area == 1 && !(address & 0x01000000) ? &vram[address & VRAM_MASK] : nullptr;
@@ -704,12 +693,11 @@ void SoftReset()
     ta_event(TA_EV_SOFT_RESET);
 }
 
-// ---- worker: decode ---------------------------------------------------------------------------------------
+// ---- intake: decode ---------------------------------------------------------------------------------------
 
 extern "C" int get_controller_type();
 extern "C" u16 GetLightGunX(int port);
 extern "C" u16 GetLightGunY(int port);
-int wiiu_exp_depth_drawn = 1;   // exp_depth_drawn=0: the depth scale from every vertex and volume, as before
 OSTime wiiu_decode_ticks[3];   // inside TA decode: the TA command loop, the depth-scale pass, the rest
 u32 wiiu_decode_blocks;
 void wiiu_ta_decode(WiiuFrame *f)
@@ -748,26 +736,25 @@ void wiiu_ta_decode(WiiuFrame *f)
     // the depth scale (1 / the largest 1/w) from the polygons drawn: strips of 3 or more vertices. A larger 1/w
     // elsewhere (Jet Grind Radio's shadow volumes: 100000) squeezed the whole scene into depths ~1e-5, where the
     // clip-space conversion rounds them together and near surfaces flicker through each other
-    if (wiiu_exp_depth_drawn)
     {
-        float m = 0.0f;
-        for (u32 i = 0; i < f->ns; i++)
-            if (f->s[i].count >= 3)
-                for (u32 k = f->s[i].first; k < f->s[i].first + f->s[i].count && k < f->nv; k++)
-                    if (f->v[k].z > m && f->v[k].z < 1e30f)
-                        m = f->v[k].z;
-        // modifier volumes left out: Jet Grind Radio's run to 1/w 100000 toward the camera. Their nearer vertices
-        // clamp to the nearest depth, still in front of every polygon (the 5% headroom), which is all the volume
-        // test asks of them
-        m *= 1.05f;
-        static u32 logged;
-        if (m < f->max_invw && logged < 5)
-        {
-            logged++;
-            printf("[gx2] depth scale from drawn vertices: largest 1/w %g, not %g\n", m, f->max_invw);
-        }
-        if (m > 0.0f)
-            f->max_invw = m;
+    float m = 0.0f;
+    for (u32 i = 0; i < f->ns; i++)
+        if (f->s[i].count >= 3)
+            for (u32 k = f->s[i].first; k < f->s[i].first + f->s[i].count && k < f->nv; k++)
+                if (f->v[k].z > m && f->v[k].z < 1e30f)
+                    m = f->v[k].z;
+    // modifier volumes left out: Jet Grind Radio's run to 1/w 100000 toward the camera. Their nearer vertices
+    // clamp to the nearest depth, still in front of every polygon (the 5% headroom), which is all the volume
+    // test asks of them
+    m *= 1.05f;
+    static u32 logged;
+    if (m < f->max_invw && logged < 5)
+    {
+        logged++;
+        printf("[gx2] depth scale from drawn vertices: largest 1/w %g, not %g\n", m, f->max_invw);
+    }
+    if (m > 0.0f)
+        f->max_invw = m;
     }
     const OSTime d2 = OSGetSystemTime();
     wiiu_decode_ticks[1] += d2 - d1;
@@ -805,18 +792,6 @@ void wiiu_ta_decode(WiiuFrame *f)
             for (const auto &c : xy)
                 f->v[f->nv++] = { c[0], c[1], z, 0xFF3030FFu, 0, 0.0f, 0.0f };
             f->s[f->ns++] = st;
-        }
-    }
-    // anything a draw would read out of range (Cemu crashed in its draw handler on a decoded frame)
-    static u32 bad;
-    for (u32 i = 0; i < f->ns && bad < 8; i++)
-    {
-        const WiiuStrip &st = f->s[i];
-        if (st.count < 3 || st.first + st.count > f->nv || (st.list > 4 && st.list != WIIU_LIST_BACKGROUND))
-        {
-            bad++;
-            printf("[ta] frame of %u blocks: strip %u of %u: first %u count %u list %u, %u vertices\n", f->n_ta, i, f->ns,
-                   st.first, st.count, st.list, f->nv);
         }
     }
     wiiu_decode_ticks[2] += OSGetSystemTime() - d2;

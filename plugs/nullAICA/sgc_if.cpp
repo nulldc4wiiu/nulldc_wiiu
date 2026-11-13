@@ -8,9 +8,6 @@
 extern u64 AicaVoxTicks;
 extern u32 AicaVoiceSum;
 extern u32 AicaSampleCount;
-#ifdef __WIIU__
-#include "aica.h"   // AicaProfTicks
-#endif
 
 #if HOST_OS == OS_WII
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them.
@@ -34,9 +31,6 @@ extern u32 AicaSampleCount;
 
 //#define CLIP_WARN
 #define key_printf(x...)  /*printf(x);*/
-#ifdef __WIIU__
-#include <coreinit/core.h>
-#endif
 #define aeg_printf(x...)  /*printf(x);*/
 #define step_printf(x...) /*printf(x);*/
 
@@ -584,27 +578,6 @@ struct ChannelEx
             CA = 0;
             step.full = 0;
             loop.looped = false;
-#ifdef __WIIU__
-            {
-                // the [audio] line's key-on counts: how many start on sample data that reads as all zero here (the
-                // console's chime was silent only with mixing on another core; Cemu plays it)
-                extern u32 wiiu_keyons, wiiu_keyons_zero;
-                wiiu_keyons++;
-                // the first 16 key-ons: what this core sees of the channel's volume and envelope, and the master
-                // volume (the console's chime keys on with real data and still mixes to silence on core 0)
-                static u32 logged;
-                if (logged++ < 16)
-                    printf("[aica-key] ch %u: TL %u DISDL %u DIPAN %u AR %u D1R %u RR %u PCMS %u LPCTL %u OCT %u FNS %u; MVOL %u "
-                           "DSPEnabled %u; on core %u\n", ChanelNumber, ccd->TL, ccd->DISDL, ccd->DIPAN, ccd->AR, ccd->D1R,
-                           ccd->RR, ccd->PCMS, ccd->LPCTL, ccd->OCT, ccd->FNS, CommonData->MVOL, aica_settings.DSPEnabled,
-                           OSGetCoreId());
-                const u32 *d = (const u32 *)SA;
-                u32 any = 0;
-                for (int i = 0; i < 16; i++)
-                    any |= d[i];
-                wiiu_keyons_zero += !any;
-            }
-#endif
             adpcm.Reset(this);
             StepStreamInitial(this);
 
@@ -1154,9 +1127,9 @@ void WriteChannelReg8(u32 channel, u32 reg)
 #ifdef __WIIU__
 void aica_clear_looped(u32 chan);   // aica.cpp: now, or queued for the mixer
 void aica_clear_looped_now(u32 chan) { Chans[chan].loop.looped = 0; }
-// exp_aica_thread: the mixer reads its own copy of the channel registers, updated in queue order, never the live
-// block: applied up to 512 samples late, a write read the live registers' later values (KYONB changed since the
-// key-on), which silenced the console's streamed sounds (BIOS chime, HotD2 music); Cemu's mixer kept up
+// The sound thread (exp_aica_thread): the mixer reads its own copy of the channel registers, updated in queue order,
+// never the live block, so a queued write sees the values written with it, not later ones (KYONB changed after a
+// key-on would silence streamed sounds: the BIOS chime, HotD2's music)
 void aica_mixer_regs(u8 *base)
 {
     for (int i = 0; i < 64; i++)
@@ -1231,7 +1204,8 @@ extern "C" int get_cdda_preset();
 void FASTCALL gdrom_get_cdda(s16* sector);
 
 #ifdef __WIIU__
-// exp_aica_thread: disc access stays on the emulator thread, sectors reach the mixer through a small ring
+// The sound thread (exp_aica_thread): disc access stays on the emulator thread, sectors reach the mixer through a small
+// ring
 int g_exp_aica_thread;
 static s16 cdda_ring[8][CDDA_SIZE];
 static volatile u32 cdda_ring_w, cdda_ring_r;
@@ -1293,9 +1267,6 @@ void AICA_Sample()
     // CDDA input — refill the sector buffer every 588 stereo frames.
     if (cdda_index >= CDDA_SIZE)
     {
-#ifdef __WIIU__
-        const u64 t_cdda = SGC_PERF_TICKS();
-#endif
         cdda_index = 0;
 #ifdef __WIIU__
         if (aica_cdda_take(cdda_sector))
@@ -1333,9 +1304,6 @@ void AICA_Sample()
                 break;
             }
         }
-#ifdef __WIIU__
-        AicaProfTicks[AICA_PROF_CDDA] += SGC_PERF_TICKS() - t_cdda;
-#endif
     }
     s32 EXTS0L = cdda_sector[cdda_index];
     s32 EXTS0R = cdda_sector[cdda_index + 1];
@@ -1414,11 +1382,5 @@ void AICA_Sample()
     pl = mixl;
     pr = mixr;
 
-#ifdef __WIIU__
-    const u64 t_out = SGC_PERF_TICKS();
     wii_WriteSample((s16)mixr, (s16)mixl);
-    AicaProfTicks[AICA_PROF_OUTPUT] += SGC_PERF_TICKS() - t_out;
-#else
-    wii_WriteSample((s16)mixr, (s16)mixl);
-#endif
 }

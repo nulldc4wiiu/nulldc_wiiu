@@ -35,7 +35,7 @@ static void __attribute__((noinline)) ta_sq_measured(Ta_Dma* t)
 }
 
 #ifdef __WIIU__
-void wiiu_ta_input(const u32* data, u32 blocks);   // wiiu/render_gx2.cpp: collected, decoded on the worker core
+void wiiu_ta_input(const u32* data, u32 blocks);   // wiiu/render_gx2.cpp: collected, decoded on the intake thread
 #endif
 
 void libPvr_TaSQ(u32* data)

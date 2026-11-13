@@ -166,12 +166,13 @@ void ppc_bx(void* dst,u32 LK)
 }
 
 #if defined(__WIIU__)
-// exp_fm_x (experiment): the fastmem window base lives in r12, so scalar accesses are rlwinm + an indexed load/store. r12
-// is volatile and nothing in the JIT uses it, so it is reloaded after every call into C. Not after calls to the JIT's
-// own stubs: their sites have a fixed layout, and the stubs reach C through ppc_call themselves.
+// exp_fm_x (on with the "faster code" option): the fastmem window base lives in r12, so scalar accesses are rlwinm +
+// an indexed load/store. r12 is volatile and nothing in the JIT uses it, so it is reloaded after every call into C.
+// Not after calls to the JIT's own stubs: their sites have a fixed layout, and the stubs reach C through ppc_call.
 extern "C" { int g_exp_fm_x; }
+// exp_ps_ftrv (on with the "faster code" option): FTRV with paired singles, in single precision (shop_ftrv below)
+extern "C" { int g_exp_ps_ftrv; }
 extern u32 g_wiiu_fm_window;
-extern int g_wii_fastmem_active;
 extern u8* CodeCache;
 #endif
 void ppc_call(void* funct)
@@ -196,9 +197,6 @@ void ppc_call_and_jump(void* funct)
 	ppc_bcctrx(BO_ALWAYS,BI_CR0_EQ,0);  // bctr
 }
 template<typename T> void ppc_call_and_jump(T* dst) { return ppc_call_and_jump((void*)dst); }
-#if defined(__WIIU__)
-#include "wiiu_codegen.h"
-#endif
 void make_address_range_executable(void* addr, u32 size)
 {
 #if defined(__WIIU__)
@@ -384,7 +382,8 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 		const u32 code_sz = block->sh4_code_size ? block->sh4_code_size : 2;
 		u8* ptr = GetMemPtr(block->start, code_sz);
 
-		// jit_sbp=3: every instruction. RAM holds words natively, so an aligned
+		// jit_sbp=3 (MvC2's module cache: its modules share head and tail
+		// instructions, see DoCheck): every instruction. RAM holds words natively, so an aligned
 		// word is two instructions; a lone halfword at either end sits at addr^2.
 		if (ptr && get_jit_sbp_preset()==3 && code_sz<=4096)
 		{
@@ -2064,8 +2063,6 @@ extern "C" void hotblocks_reset()
 // Compile time: claim a slot for this block. Returns its index, or -1 if
 // unavailable — the caller needs the index to reach both the descriptor and
 // the counter, which live in separate arrays.
-// experiments, wiiu.cfg exp_*=1 (main_wiiu.cpp); off by default
-extern "C" { int g_exp_ps_ftrv; }
 static s32 hotblocks_slot(DecodedBlock* block)
 {
 	if (!get_hotblocks_preset())
@@ -2164,7 +2161,6 @@ static bool hotblocks_dump_once(const HotBlock& h)
 	return true;
 }
 
-
 extern "C" void hotblocks_dump(double seconds)
 {
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
@@ -2259,9 +2255,7 @@ extern "C" void hotblocks_dump(double seconds)
 		idx[best] = idx[--left]; // already on file, try the next costliest
 	}
 	for (u32 i=0;i<s_hb_n;i++)
-	{
 		s_hb_hits[i] = 0;
-	}
 
 	fflush(stdout);
 }

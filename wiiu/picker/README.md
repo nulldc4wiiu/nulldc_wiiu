@@ -1,7 +1,7 @@
 # picker_core — a content picker's logic, without UI
 
 `picker_core.c` / `picker_core.h` are the logic of nullDC's game picker with no UI at all: plain C, only
-stdio and dirent. `../picker_wiiu.cpp` is the UI: it draws what the core says with GX2 and an 8x8 font, and
+stdio and dirent. `../picker_wiiu.cpp` is the UI: it draws what the core says with GX2 and a Roboto bitmap font, and
 feeds it buttons from VPAD and KPAD.
 
 It's structured like FBNeo's `player/picker` (a `picker_cfg`, `config.txt` with `content=` and `autoload=`, a
@@ -13,12 +13,11 @@ shared with FBNeo. What it has beyond FBNeo's:
 | File types | one `ext` | a NULL-terminated `exts` list |
 | Where | the content folder only | `scan_depth` folders down, `skip_dirs` never entered |
 | What comes back | the name (host rebuilds the path) | the full `path` |
-| Entries not on disk | — | `extras`, listed first (nullDC: "Dreamcast BIOS (no disc)", path "") |
+| Entries not on disk | — | `extras`, listed first (nullDC: "Dreamcast menu (no disc): memory cards, settings", path "") |
 | Long names | over 47 characters skipped | any length (the UI truncates) |
 | Order | `strcmp` | case-insensitive |
 | Up/down | fixed 140 ms steps | a step, then repeats after 400 ms every 80 ms |
-| Labels | `label_for(name)` | `label_for(name, path)` |
-| Other config keys | `rotate=` | `picker_core_config(key)` for any `key=value` |
+| Other config keys | fixed keys | `picker_core_config(key)` for any `key=value` |
 
 ## The UI's side
 
@@ -33,19 +32,19 @@ for (;;) {
     if (ev == PICKER_QUIT) break;
     const picker_view *v = picker_core_view();
     if (v->help) draw picker_core_help_lines();
-    else draw rows v->top .. v->top + v->visible - 1 (picker_core_entry(i)->name, picker_core_label(i)),
+    else draw rows v->top .. v->top + v->visible - 1 (picker_core_entry(i)->name),
          highlight v->sel, and "sel+1 / count"
 }
 ```
 
-- Buttons are a set over all controllers: `UP`, `DOWN`, `ACCEPT`, `HELP`, and `QUIT_COMBO`, which means the host's
-  "leave" combination is held: + and − on any pad. The core needs it held
-  0.5 s, and released once after the picker opens.
+- Buttons are a set over all controllers: `UP`, `DOWN`, `ACCEPT`, `HELP`, `OPTIONS` (opens and closes the options
+  page), `BACK` (leaves it), and `QUIT_COMBO`, which means the host's "leave" combination is held: + and − on any
+  pad. The core needs it held 0.5 s, and released once after the picker opens.
 - Buttons held when the picker opens only count once released, so a press left over from the Wii U Menu doesn't
   choose anything.
-- `picker_core_hold_to_leave(held)` is the in-game version (30 frames), for hosts that return to the menu.
 
 ## The font
 
-`../font_roboto.h` is Roboto (Apache License 2.0, `../Roboto-Regular.ttf`) rasterized at build time by `../make_font.py`:
-no TTF engine in the app. The size is make_font.py's argument, then regenerate.
+`../font_roboto.h` is Roboto (SIL Open Font License 1.1, `../Roboto-Regular.ttf`) rasterized by `../make_font.py`. The
+generated header is checked in, so the build needs no TTF engine; to change the size, rerun make_font.py with the new
+size.

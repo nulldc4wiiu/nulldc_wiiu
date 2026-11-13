@@ -312,8 +312,6 @@ void bm_InvalidateRange(u32 start_addr, u32 end_addr)
 	}
 }
 
-
-
 // Get statistics (for debugging)
 #ifdef BM_ENABLE_STATS
 void bm_GetStats(u32* hits, u32* misses, u32* cache_hits, u32* total_blocks)

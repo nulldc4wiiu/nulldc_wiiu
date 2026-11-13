@@ -97,9 +97,7 @@ void UpdateFPSCR()
 {
 	CCALL(CC_SYNC_FPSCR);
 	if (fpscr.FR !=old_fpscr.FR)
-	{
 		ChangeFP();//fpu bank change
-	}
 	old_fpscr=fpscr;
 	SetFloatStatusReg();//ensure they are on sync :)
 }

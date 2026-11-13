@@ -7,7 +7,8 @@
 //   * everything else stays unmapped, area 0 above all (store queue addresses mask onto it, see wii_fastmem.h); an
 //     access there takes a DSI, and main_wiiu.cpp's DSI callback hands it to wiiu_fastmem_dsi, which has
 //     rec_fastmem_patch rewrite the site into a branch to a slow-path trampoline and retries it
-// fastmem=1 in wiiu.cfg turns it on; it self-tests the window and stays off if anything fails. fastmem=2 is the Cemu
+// On by default (the options page; fastmem= in wiiu.cfg overrides it); it self-tests the window and stays off if
+// anything fails. fastmem=2 is the Cemu
 // test mode (Cemu neither aliases mapped memory nor raises DSIs): no window, and every site gets its trampoline as it
 // is compiled, so the decoder and trampolines run on every memory access the game makes.
 #include <coreinit/context.h>

@@ -1,4 +1,4 @@
-/* Wii U stand-in for libogc's <ogc/video.h>. No video output yet (renderer is a later phase). */
+/* Wii U stand-in for libogc's <ogc/video.h>: VSync is a timed sleep (ogc_compat.cpp). */
 #pragma once
 #include <stdint.h>
 typedef void (*VIRetraceCallback)(uint32_t retraceCnt);

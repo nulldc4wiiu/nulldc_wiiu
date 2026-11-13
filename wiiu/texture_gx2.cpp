@@ -8,7 +8,6 @@
 // scene still in flight never sees its textures change or vanish.
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
-#include <coreinit/core.h>
 #include <coreinit/time.h>
 #include <gx2/mem.h>
 #include <gx2/sampler.h>
@@ -33,17 +32,6 @@ static inline u32 from1555(u32 p) { return rgba(((p >> 10) & 31) << 3, ((p >> 5)
 static inline u32 from565(u32 p) { return rgba((p >> 11) << 3, ((p >> 5) & 63) << 2, (p & 31) << 3, 255); }
 static inline u32 from4444(u32 p) { return rgba(((p >> 8) & 15) * 17, ((p >> 4) & 15) * 17, (p & 15) * 17, (p >> 12) * 17); }
 static inline u32 from8888(u32 p) { return rgba((p >> 16) & 255, (p >> 8) & 255, p & 255, p >> 24); }
-
-static inline u32 from16(u32 fmt, u32 p)
-{
-    switch (fmt)
-    {
-    case 1: return from565(p);
-    case 2: return from4444(p);
-    case 4: return rgba(255, 255, 255, 255);   // bump map: not shaded, keep the polygon colour
-    default: return from1555(p);
-    }
-}
 
 static inline u32 palette_entry(u32 i)
 {
@@ -292,8 +280,8 @@ struct TexEntry
     u32 bytes;    // of the surface, mip chain included
     GX2Texture tex;
     bool valid;
-    // Up to three scenes can be in flight (drawing, ready, being built), and a game may change a texture every
-    // frame (MvC2's character sprites): a change is decoded into the next of three images, so a scene in flight
+    // Up to four scenes can be in flight (drawing, two ready, being built), and a game may change a texture every
+    // frame (MvC2's character sprites): a change is decoded into the next of four images, so a scene in flight
     // keeps the one its descriptor copy points at. Allocated on the first change.
     void *img[4];
     u8 cur;
@@ -506,14 +494,6 @@ static bool update(TexEntry *e, u32 frame_seq)
     }
     e->decoded_seq = frame_seq;
     texture_decode_ticks += OSGetSystemTime() - t0;
-    {
-        static u32 cores;   // which threads decode, once each, for the fight profile
-        if (!(cores >> OSGetCoreId() & 1))
-        {
-            cores |= 1u << OSGetCoreId();
-            printf("[tex] decoding on core %u\n", OSGetCoreId());
-        }
-    }
     return changed;
 }
 

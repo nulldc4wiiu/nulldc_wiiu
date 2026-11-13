@@ -13,7 +13,6 @@
 
 typedef struct {
     char *name, *path;
-    char label[32];
 } item;
 
 static const picker_cfg *g_cfg;
@@ -107,8 +106,7 @@ void picker_core_init(const picker_cfg *cfg)
             if (line[0] == '#' || !(eq = strchr(line, '=')))
                 continue;
             *eq = 0;
-            /* "content=" is the generic key; "roms=" accepted as an alias (FBNeo's older configs) */
-            if ((!strcmp(line, "content") || !strcmp(line, "roms")) && eq[1])
+            if (!strcmp(line, "content") && eq[1])
                 snprintf(g_content, sizeof(g_content), "%s", eq + 1);
             else if (!strcmp(line, "autoload"))
                 snprintf(g_autoload, sizeof(g_autoload), "%s", eq + 1);
@@ -197,7 +195,6 @@ static void add(const char *name, const char *path)
         return;
     g_items[g_count].name = dup_str(name);
     g_items[g_count].path = dup_str(path);
-    g_items[g_count].label[0] = 0;
     if (g_items[g_count].name && g_items[g_count].path)
         g_count++;
 }
@@ -248,11 +245,6 @@ int picker_core_scan(void)
     g_first_scanned = g_count;
     scan_dir(g_content, g_cfg->scan_depth);
     qsort(g_items + g_first_scanned, (size_t)(g_count - g_first_scanned), sizeof(item), cmp_items);
-    if (g_cfg->label_for)
-        for (i = 0; i < g_count; i++) {
-            const char *s = g_cfg->label_for(g_items[i].name, g_items[i].path);
-            snprintf(g_items[i].label, sizeof(g_items[i].label), "%s", s ? s : "");
-        }
     g_view.count = g_count;
     g_view.empty = g_count == g_first_scanned;   /* only the extras: nothing was found */
     g_view.help = g_view.empty || (g_cfg->warning && *g_cfg->warning);
@@ -272,7 +264,6 @@ const picker_entry *picker_core_entry(int i)
     return &g_entry;
 }
 
-const char *picker_core_label(int i) { return (i >= 0 && i < g_count) ? g_items[i].label : ""; }
 
 /* ---- the menu ---- */
 
@@ -360,13 +351,6 @@ const picker_entry *picker_core_selected(void) { return picker_core_entry(g_view
 
 /* ---- text ---- */
 
-const char *picker_core_header(void)
-{
-    static char h[160];
-    snprintf(h, sizeof(h), "%s - pick a %s", g_cfg->app_name, g_cfg->content_noun);
-    return h;
-}
-
 int picker_core_help_pages(void) { return g_cfg->controls && g_cfg->controls[0] ? 2 : 1; }
 
 int picker_core_help_lines(const char **lines, int max)
@@ -402,14 +386,4 @@ int picker_core_help_lines(const char **lines, int max)
             lines[i] = l[i];
     }
     return n < max ? n : max;
-}
-
-int picker_core_hold_to_leave(int combo_held)
-{
-    static int frames;
-    if (!combo_held) {
-        frames = 0;
-        return 0;
-    }
-    return ++frames >= 30;
 }

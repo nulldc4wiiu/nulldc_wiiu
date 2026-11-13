@@ -1,7 +1,7 @@
 // Game picker, shown before the emulator starts when wiiu.cfg names no file. The logic (config.txt, the scan of
 // the home folder two levels deep, the menu, the help text) is picker/picker_core.c, structured like FBNeo's
 // player/picker but kept separately; this file is only the UI for it: Roboto drawn into a 960x720 image shown
-// through GX2 like the emulator's framebuffer (OSScreen before GX2 left the GamePad black on a console), and the
+// through GX2 like the emulator's framebuffer, and the
 // GamePad, Wii Remote, Classic and Pro Controller read through VPAD and KPAD.
 // Up/down to choose, A to start, Y (or 1) for help, hold + and - (or HOME) to quit.
 #include <coreinit/time.h>
@@ -16,6 +16,8 @@
 #include "kpad_wiiu.h"
 #include "font_roboto.h"
 #include "picker/picker_core.h"
+
+#define NULLDC_WIIU_VERSION "v0.800-U1"   // this Wii U release (upstream alpha 0.800); README-WiiU.md
 
 void wiiu_gx2_show_ui(const u32 *px, u32 w, u32 h);
 void wiiu_gx2_hide_ui();
@@ -147,7 +149,6 @@ u32 text_wrapped(u32 *px, u32 x, u32 row, const char *s, u32 color)
 }
 
 int options_count();
-#define NULLDC_WIIU_VERSION "v0.800-U1"   // this Wii U release (upstream alpha 0.800); README-WiiU.md
 const char *option_label(int i);
 const char *option_help(int i);
 
@@ -192,10 +193,8 @@ void draw(u32 *px)
         for (int i = 0; i < v.visible && v.top + i < v.count; i++)
         {
             const int idx = v.top + i;
-            const char *label = picker_core_label(idx);
             char line[128];
-            snprintf(line, sizeof(line), "%s%.90s%s%s", idx == v.sel ? "> " : "   ", picker_core_entry(idx)->name,
-                     *label ? " " : "", label);
+            snprintf(line, sizeof(line), "%s%.90s", idx == v.sel ? "> " : "   ", picker_core_entry(idx)->name);
             text(px, MARGIN, 4 + i, line, idx == v.sel ? HILITE : FG);
         }
         char count[24];
@@ -246,8 +245,6 @@ const char *option_label(int i) { return options[i].label; }
 const char *option_help(int i) { return i >= 0 && i < options_count() ? options[i].help : nullptr; }
 } // namespace
 
-// home: the data folder (ends in '/'), its config.txt and, by default, the content folder. path: the chosen file,
-// empty for the BIOS. False when the user quit.
 static void setup(const char *home)
 {
     static std::string data_dir;
@@ -323,6 +320,8 @@ void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_cor
     *sound_buffer_ms = picker_core_option(9) == 0 ? 100 : 0;
 }
 
+// home: the data folder (ends in '/'), its config.txt and, by default, the content folder. path: the chosen file,
+// empty for the BIOS. False when the user quit.
 bool wiiu_pick_game(const char *home, char *path, size_t size)
 {
     setup(home);

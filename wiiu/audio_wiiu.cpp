@@ -39,7 +39,7 @@ static volatile u32 write_pos, play_pos;  // in samples, modulo RING
 static volatile bool playing, ax_ready, aica_ready;
 static s16 block[2][BLOCK];
 static u32 block_fill;
-static float speed_glide = 0.02f;        // audio_glide=1: 0.005, speed follows the queue over about 600 ms
+static const float SPEED_GLIDE = 0.005f; // speed follows the queue over about 600 ms
 static float speed = 1.0f;               // the voices' current playback speed (frame callback only)
 static volatile float speed_sum;         // for the log: summed over frame callbacks
 static volatile u32 speed_n;
@@ -53,9 +53,8 @@ static inline u32 queued() { return (write_pos - play_pos) & (RING - 1); }
 extern "C" u32 wiiu_audio_queued() { return ax_ready ? queued() : 0; }
 
 static void start_voices();
-static volatile bool want_start;
-u32 wiiu_keyons, wiiu_keyons_zero;   // sgc_if.cpp KEY_ON
-extern u32 g_aica_lag_max, g_aica_lag_sum, g_aica_lag_n;   // aica.cpp   // exp_aica_thread: restart the voices from the frame callback
+static volatile bool want_start;   // exp_aica_thread: restart the voices from the frame callback
+extern u32 g_aica_lag_max, g_aica_lag_sum, g_aica_lag_n;   // aica.cpp
 static void frame_callback()
 {
     if (!ax_ready)
@@ -96,14 +95,14 @@ static void frame_callback()
         }
         return;
     }
-    // proportional steering toward TARGET_QUEUED, smoothed over ~150 ms so the pitch glides rather than wobbles:
+    // proportional steering toward TARGET_QUEUED, smoothed (SPEED_GLIDE) so the pitch glides rather than wobbles:
     // an emulator at 76% settles with the queue near 1000 samples and the voices at 76%
     float want = 1.0f + 0.5f * ((float)q - (float)TARGET_QUEUED) / (float)TARGET_QUEUED;
     want = want < wiiu_audio_min_speed ? wiiu_audio_min_speed : want > MAX_SPEED ? MAX_SPEED : want;
     // speed always moves; the voices only hear about it once it has moved a little (a threshold on each step
     // instead left playback stuck at 98% with the emulator paced to match)
     static float applied = 1.0f;
-    speed += (want - speed) * speed_glide;
+    speed += (want - speed) * SPEED_GLIDE;
     if (speed - applied > 0.0005f || applied - speed > 0.0005f)
     {
         applied = speed;
@@ -118,8 +117,8 @@ static void frame_callback()
     speed_n = speed_n + 1;
 }
 
-// wiiu.cfg: audio_buffer=<ms> sets the queue the steering aims for, audio_glide=1 slows its speed changes
-void wiiu_audio_tune(int buffer_ms, int glide)
+// the options page or wiiu.cfg audio_buffer=<ms>: the queue the steering aims for
+void wiiu_audio_tune(int buffer_ms)
 {
     if (buffer_ms)
     {
@@ -127,8 +126,6 @@ void wiiu_audio_tune(int buffer_ms, int glide)
         MAX_QUEUED = TARGET_QUEUED * 3 / 2;
         START_QUEUED = TARGET_QUEUED * 3 / 8;
     }
-    if (glide)
-        speed_glide = 0.005f;
 }
 
 // called from main before the emulator starts
@@ -272,11 +269,10 @@ void wii_audio_push_sample(s16 l, s16 r)
     {
         const u32 n = speed_n;
         printf("[audio] 1 s of samples: peak %u, queued %u, playing %d, underruns %u, dropped blocks %u, waits %u ms, "
-               "playback speed %.0f%%, stalls %u; key-ons %u (%u on zero data); mixer lag avg %u max %u\n", stat_peak, queued(),
-               playing, stat_underruns, stat_drops, stat_waits, n ? speed_sum / n * 100.0f : 100.0f, stat_stalls, wiiu_keyons,
-               wiiu_keyons_zero, g_aica_lag_n ? g_aica_lag_sum / g_aica_lag_n : 0, g_aica_lag_max);
+               "playback speed %.0f%%, stalls %u; mixer lag avg %u max %u\n", stat_peak, queued(),
+               playing, stat_underruns, stat_drops, stat_waits, n ? speed_sum / n * 100.0f : 100.0f, stat_stalls,
+               g_aica_lag_n ? g_aica_lag_sum / g_aica_lag_n : 0, g_aica_lag_max);
         g_aica_lag_sum = g_aica_lag_n = g_aica_lag_max = 0;
-        wiiu_keyons = wiiu_keyons_zero = 0;
         stat_samples = stat_peak = stat_drops = stat_waits = stat_underruns = stat_stalls = 0;
         speed_sum = 0.0f;
         speed_n = 0;

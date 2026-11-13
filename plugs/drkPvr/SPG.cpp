@@ -504,20 +504,6 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                     vps, rnd_pct, ta_str,
                     arm_pct, aica_pct, vox_pct, voices, snd_pct);
                 fflush(stdout); // once per 1s: keep the log tail intact if the Wii is powered off
-#ifdef __WIIU__
-                {
-                    // the AICA's share split up (nullAICA/aica.cpp); output includes the sound backend's pacing
-                    // waits, which the [audio] line reports on their own
-                    extern u64 AicaProfTicks[4];
-                    printf("[aica-prof] of the emulator thread: sample %.1f%% (voices %.1f%%, cdda %.1f%%, output %.1f%%), "
-                           "timers+interrupts %.1f%%\n",
-                           PERF_TICKS_US(AicaProfTicks[0]) / 1e4 / tdiff, vox_pct,
-                           PERF_TICKS_US(AicaProfTicks[1]) / 1e4 / tdiff, PERF_TICKS_US(AicaProfTicks[2]) / 1e4 / tdiff,
-                           PERF_TICKS_US(AicaProfTicks[3]) / 1e4 / tdiff);
-                    for (int i = 0; i < 4; i++)
-                        AicaProfTicks[i] = 0;
-                }
-#endif
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on
                 hotblocks_dump(tdiff);   // no-op unless the JIT HOTBLOCKS preset is on
