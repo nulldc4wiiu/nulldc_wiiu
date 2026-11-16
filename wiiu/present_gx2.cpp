@@ -42,6 +42,13 @@
 #include "plugs/drkPvr/regs.h"
 #include "plugs/drkPvr/ta_structs.h"
 #include "wiiu_frame.h"
+#include "font_roboto.h"
+#if __has_include("vmu_bg.h")
+#include "vmu_bg.h"
+#define HAVE_VMU_BG_H 1
+#else
+#define HAVE_VMU_BG_H 0
+#endif
 
 extern const u8 blit_gsh[], geo_gsh[];
 GX2Sampler *wiiu_sampler(u32 tsp);
@@ -1585,18 +1592,230 @@ static void process_rtt()
     OSFastMutex_Unlock(&frame_lock);
 }
 
-// draw a texture over the 4:3 area of the current output
-static void blit(GX2Texture *t)
+extern "C" int g_ratio_preset;
+extern u8 g_vmu_lcd_bits[48 * 32];
+extern volatile u32 g_vmu_lcd_seq;
+
+static int s_vmu_mode = 1;   // 0: off, 1: corner (bottom-left), 2: gamepad dedicated
+void wiiu_gx2_set_vmu_mode(int mode) { s_vmu_mode = mode; }
+
+static GX2RBuffer full_pos_buf, corner_pos_buf;
+static GX2Sampler point_sampler;
+static bool vmu_buffers_inited = false;
+static GX2Texture vmu_corner_tex, vmu_ded_tex;
+static u32 vmu_corner_last_seq = ~0u, vmu_ded_last_seq = ~0u;
+static float s_live_fps = 60.0f;
+static u32 vmu_ded_last_fps_int = ~0u;
+
+static void ensure_vmu_buffers()
+{
+    if (vmu_buffers_inited)
+        return;
+    // Fullscreen 16:9 quad [-1..1] for 16:9 aspect ratio and Dedicated VMU screen
+    static const float fpos[] = { -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f };
+    // Bottom-left corner quad flush with bottom-left edge (-1.0, -1.0) inside the left 4:3 pillarbox bar
+    static const float cpos[] = { -1.00f, -1.00f, -0.755f, -1.00f, -0.755f, -0.70f, -1.00f, -0.70f };
+    full_pos_buf.flags = corner_pos_buf.flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_READ |
+                                                GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
+    full_pos_buf.elemSize = corner_pos_buf.elemSize = 8;
+    full_pos_buf.elemCount = corner_pos_buf.elemCount = 4;
+    GX2RCreateBuffer(&full_pos_buf);
+    GX2RCreateBuffer(&corner_pos_buf);
+    memcpy(GX2RLockBufferEx(&full_pos_buf, (GX2RResourceFlags)0), fpos, sizeof(fpos));
+    GX2RUnlockBufferEx(&full_pos_buf, (GX2RResourceFlags)0);
+    memcpy(GX2RLockBufferEx(&corner_pos_buf, (GX2RResourceFlags)0), cpos, sizeof(cpos));
+    GX2RUnlockBufferEx(&corner_pos_buf, (GX2RResourceFlags)0);
+    GX2InitSampler(&point_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
+    vmu_buffers_inited = true;
+}
+
+static void blit_ex(GX2Texture *t, GX2RBuffer *pbuf, GX2Sampler *smp)
 {
     GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
     GX2SetFetchShader(&group.fetchShader);
     GX2SetVertexShader(group.vertexShader);
     GX2SetPixelShader(group.pixelShader);
-    GX2RSetAttributeBuffer(&pos_buf, 0, pos_buf.elemSize, 0);
+    GX2RSetAttributeBuffer(pbuf, 0, pbuf->elemSize, 0);
     GX2RSetAttributeBuffer(&uv_buf, 1, uv_buf.elemSize, 0);
     GX2SetPixelTexture(t, group.pixelShader->samplerVars[0].location);
-    GX2SetPixelSampler(&sampler, group.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(smp, group.pixelShader->samplerVars[0].location);
     GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+}
+
+static void blit(GX2Texture *t)
+{
+    ensure_vmu_buffers();
+    GX2RBuffer *pbuf = (!ui_active && g_ratio_preset == 1) ? &full_pos_buf : &pos_buf;
+    blit_ex(t, pbuf, &sampler);
+}
+
+// Draw small 52x36 (48x32 + 2px border) VMU texture for Mode 1 (bottom-left corner)
+static void draw_vmu_corner()
+{
+    ensure_vmu_buffers();
+    const u32 CW = 52, CH = 36;
+    if (!vmu_corner_tex.surface.image)
+    {
+        vmu_corner_tex.surface.width = CW;
+        vmu_corner_tex.surface.height = CH;
+        vmu_corner_tex.surface.depth = 1;
+        vmu_corner_tex.surface.mipLevels = 1;
+        vmu_corner_tex.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+        vmu_corner_tex.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+        vmu_corner_tex.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+        vmu_corner_tex.viewNumSlices = 1;
+        vmu_corner_tex.compMap = 0x00010203;
+        GX2CalcSurfaceSizeAndAlignment(&vmu_corner_tex.surface);
+        GX2InitTextureRegs(&vmu_corner_tex);
+        if (!GX2RCreateSurface(&vmu_corner_tex.surface,
+                               GX2R_RESOURCE_BIND_TEXTURE | GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ))
+            return;
+        vmu_corner_last_seq = ~0u;
+    }
+    const u32 seq = g_vmu_lcd_seq;
+    if (seq != vmu_corner_last_seq)
+    {
+        vmu_corner_last_seq = seq;
+        u32 *dst = (u32 *)GX2RLockSurfaceEx(&vmu_corner_tex.surface, 0, (GX2RResourceFlags)0);
+        const u32 pitch = vmu_corner_tex.surface.pitch;
+        const u32 COL_BORDER = 0x283038FF, COL_LCD_OFF = 0x9BBC8FFF, COL_LCD_ON = 0x141C18FF;
+        for (u32 y = 0; y < CH; y++)
+            for (u32 x = 0; x < CW; x++)
+            {
+                if (x < 2 || x >= CW - 2 || y < 2 || y >= CH - 2)
+                    dst[y * pitch + x] = COL_BORDER;
+                else
+                    dst[y * pitch + x] = g_vmu_lcd_bits[(y - 2) * 48 + (x - 2)] ? COL_LCD_ON : COL_LCD_OFF;
+            }
+        GX2RUnlockSurfaceEx(&vmu_corner_tex.surface, 0, (GX2RResourceFlags)0);
+    }
+    blit_ex(&vmu_corner_tex, &corner_pos_buf, &point_sampler);
+}
+
+static void vmu_draw_text(u32 *px, u32 pitch, u32 W, u32 H, u32 x, u32 y_top, const char *s, u32 color)
+{
+    const u32 cr = color >> 24, cg = (color >> 16) & 255, cb = (color >> 8) & 255;
+    for (; *s; s++)
+    {
+        if (*s < 32 || *s >= 127)
+            continue;
+        const FontGlyph &g = font_glyphs[*s - 32];
+        if (x + g.advance > W - 16)
+            break;
+        const unsigned char *a = &font_alpha[g.offset];
+        for (int y = 0; y < g.h; y++)
+            for (int i = 0; i < g.w; i++)
+            {
+                const u32 c = *a++;
+                const int dx = (int)x + g.x + i, dy = (int)y_top + g.y + y;
+                if (!c || dx < 0 || dy < 0 || dx >= (int)W || dy >= (int)H)
+                    continue;
+                u32 &d = px[dy * pitch + dx];
+                const u32 dr = d >> 24, dg = (d >> 16) & 255, db = (d >> 8) & 255;
+                d = (dr + (cr - dr) * c / 255) << 24 | (dg + (cg - dg) * c / 255) << 16 | (db + (cb - db) * c / 255) << 8 | 255;
+            }
+        x += g.advance;
+    }
+}
+
+// Draw full 960x540 Dedicated VMU screen on GamePad (vmu_gamepad.jpg + both LCD screens + FPS counter at top)
+static void draw_vmu_dedicated()
+{
+    ensure_vmu_buffers();
+    const u32 DW = 960, DH = 540;
+    if (!vmu_ded_tex.surface.image)
+    {
+        vmu_ded_tex.surface.width = DW;
+        vmu_ded_tex.surface.height = DH;
+        vmu_ded_tex.surface.depth = 1;
+        vmu_ded_tex.surface.mipLevels = 1;
+        vmu_ded_tex.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+        vmu_ded_tex.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+        vmu_ded_tex.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+        vmu_ded_tex.viewNumSlices = 1;
+        vmu_ded_tex.compMap = 0x00010203;
+        GX2CalcSurfaceSizeAndAlignment(&vmu_ded_tex.surface);
+        GX2InitTextureRegs(&vmu_ded_tex);
+        if (!GX2RCreateSurface(&vmu_ded_tex.surface,
+                               GX2R_RESOURCE_BIND_TEXTURE | GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ))
+            return;
+
+        // Paint base background once from vmu_bg.h (480x270 scaled 2x to 960x540)
+        u32 *dst = (u32 *)GX2RLockSurfaceEx(&vmu_ded_tex.surface, 0, (GX2RResourceFlags)0);
+        const u32 pitch = vmu_ded_tex.surface.pitch;
+        for (u32 y = 0; y < DH; y++)
+            for (u32 x = 0; x < DW; x++)
+            {
+#if HAVE_VMU_BG_H
+                const u16 p = vmu_bg_rgb565[(y / 2) * 480 + (x / 2)];
+                const u32 r = ((p >> 11) & 0x1F) * 255 / 31;
+                const u32 g = ((p >> 5) & 0x3F) * 255 / 63;
+                const u32 b = (p & 0x1F) * 255 / 31;
+                dst[y * pitch + x] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+#else
+                dst[y * pitch + x] = 0x3A3D42FF;
+#endif
+            }
+        GX2RUnlockSurfaceEx(&vmu_ded_tex.surface, 0, (GX2RResourceFlags)0);
+        vmu_ded_last_seq = ~0u;
+        vmu_ded_last_fps_int = ~0u;
+    }
+
+    const u32 seq = g_vmu_lcd_seq;
+    const u32 fps_int = (u32)(s_live_fps * 10.0f + 0.5f);
+    if (seq != vmu_ded_last_seq || fps_int != vmu_ded_last_fps_int)
+    {
+        vmu_ded_last_seq = seq;
+        vmu_ded_last_fps_int = fps_int;
+        u32 *dst = (u32 *)GX2RLockSurfaceEx(&vmu_ded_tex.surface, 0, (GX2RResourceFlags)0);
+        const u32 pitch = vmu_ded_tex.surface.pitch;
+        const u32 COL_LCD_OFF = 0x9BBC8FFF, COL_LCD_ON = 0x141C18FF, COL_LCD_GRID = 0x8AA87EFF;
+
+        // 1. Paint Left Zoomed Screen (x: 147..570, y: 156..502)
+        const u32 LX0 = 147, LY0 = 156, LW = 423, LH = 360;
+        for (u32 y = 0; y < LH; y++)
+            for (u32 x = 0; x < LW; x++)
+            {
+                if (x < 8 || x >= LW - 8 || y < 8 || y >= LH - 8)
+                {
+                    dst[(LY0 + y) * pitch + (LX0 + x)] = COL_LCD_OFF;
+                    continue;
+                }
+                const u32 vx = (x - 8) * 48 / (LW - 16);
+                const u32 vy = (y - 8) * 32 / (LH - 16);
+                const bool on = g_vmu_lcd_bits[(vy < 32 ? vy : 31) * 48 + (vx < 48 ? vx : 47)] != 0;
+                // Subtle LCD pixel grid effect on the zoomed screen
+                const bool edge = (((x - 8) * 48) % (LW - 16) < 48) || (((y - 8) * 32) % (LH - 16) < 32);
+                dst[(LY0 + y) * pitch + (LX0 + x)] = on ? COL_LCD_ON : (edge ? COL_LCD_GRID : COL_LCD_OFF);
+            }
+
+        // 2. Paint Right Small VMU Screen (x: 734..880, y: 177..305)
+        const u32 RX0 = 734, RY0 = 177, RW = 146, RH = 128;
+        for (u32 y = 0; y < RH; y++)
+            for (u32 x = 0; x < RW; x++)
+            {
+                if (x < 4 || x >= RW - 4 || y < 4 || y >= RH - 4)
+                {
+                    dst[(RY0 + y) * pitch + (RX0 + x)] = COL_LCD_OFF;
+                    continue;
+                }
+                const u32 vx = (x - 4) * 48 / (RW - 8);
+                const u32 vy = (y - 4) * 32 / (RH - 8);
+                const bool on = g_vmu_lcd_bits[(vy < 32 ? vy : 31) * 48 + (vx < 48 ? vx : 47)] != 0;
+                dst[(RY0 + y) * pitch + (RX0 + x)] = on ? COL_LCD_ON : COL_LCD_OFF;
+            }
+
+        // 3. Paint FPS badge at top-right (x: 680..940, y: 12..52)
+        for (u32 y = 12; y < 52; y++)
+            for (u32 x = 680; x < 940; x++)
+                dst[y * pitch + x] = 0x182438FF;
+        char fps_buf[48];
+        snprintf(fps_buf, sizeof(fps_buf), "FPS: %u.%u", fps_int / 10, fps_int % 10);
+        vmu_draw_text(dst, pitch, DW, DH, 700, 14, fps_buf, 0xFFE060FF);
+
+        GX2RUnlockSurfaceEx(&vmu_ded_tex.surface, 0, (GX2RResourceFlags)0);
+    }
+    blit_ex(&vmu_ded_tex, &full_pos_buf, &sampler);
 }
 
 // ---- time report and frame loop ----------------------------------------------------------------------
@@ -1718,6 +1937,25 @@ void wiiu_gx2_frame()
     }
     perf.draw += (t1 = OSGetSystemTime()) - t;
     t = t1;
+    // Update live FPS reading once per second for the GamePad dedicated VMU view
+    {
+        static OSTime fps_t0 = 0;
+        static u32 fps_r0 = 0;
+        const OSTime now = OSGetSystemTime();
+        if (!fps_t0)
+        {
+            fps_t0 = now;
+            fps_r0 = wiiu_renders;
+        }
+        else if (now - fps_t0 >= OSSecondsToTicks(1))
+        {
+            const float dt = (float)OSTicksToMilliseconds(now - fps_t0) / 1000.0f;
+            s_live_fps = (dt > 0.0f) ? (float)(wiiu_renders - fps_r0) / dt : 0.0f;
+            fps_t0 = now;
+            fps_r0 = wiiu_renders;
+        }
+    }
+
     wiiu_gx2_stage = "blit to TV and GamePad";
     for (int screen = 0; screen < 2; screen++)
     {
@@ -1726,7 +1964,16 @@ void wiiu_gx2_frame()
         else
             WHBGfxBeginRenderDRC();
         WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        blit(ui_active ? &ui_tex : show_3d ? &rt_tex : &tex);
+        if (screen == 1 && !ui_active && s_vmu_mode == 2)
+        {
+            draw_vmu_dedicated();
+        }
+        else
+        {
+            blit(ui_active ? &ui_tex : show_3d ? &rt_tex : &tex);
+            if (screen == 1 && !ui_active && s_vmu_mode == 1)
+                draw_vmu_corner();
+        }
         if (screen == 0)
             WHBGfxFinishRenderTV();
         else

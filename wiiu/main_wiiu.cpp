@@ -50,10 +50,15 @@ void wiiu_gx2_frame();
 void wiiu_gx2_shutdown();
 void wiiu_audio_init();
 bool wiiu_pick_game(const char *home, char *path, size_t size);
+#include "wii/user_controls.h"
 void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
                                bool *code_check, int *sound_buffer_ms);
 void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *render_width, bool *keep_pitch);
+int wiiu_picker_ctrl_layout(const char *home);
+void wiiu_picker_extra_options(const char *home, int *ratio, int *cable, int *frameskip, int *render_delay);
+int wiiu_picker_vmu_mode(const char *home);
 void wiiu_gx2_set_render_width(int width);   // present_gx2.cpp
+void wiiu_gx2_set_vmu_mode(int mode);        // present_gx2.cpp
 extern float wiiu_audio_min_speed;          // audio_wiiu.cpp
 static bool rt_width_set;                    // wiiu.cfg set rt_width: it wins over the picker's option
 void wiiu_kpad_init();
@@ -166,6 +171,7 @@ static int watchdog(int, const char **)
 void wiiu_audio_shutdown();
 extern "C" int g_fastmem_preset, g_dynarec_preset, g_idle_shinobi_preset, g_controller_type;
 extern "C" int g_bcache_preset, g_jit_align_preset, g_jit_sbp_preset;
+extern "C" int g_ratio_preset, g_cable_preset, g_frameskip_preset, g_render_delay_preset;
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_sq_fast, g_exp_aica_thread;
 extern int wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
@@ -376,12 +382,24 @@ static void load_wiiu_cfg()
 static void write_summary(int seconds)
 {
     printf("[wiiu] run ended after %d s\n", seconds);
+    const float avg_fps = seconds > 0 ? (float)wiiu_renders / (float)seconds : 0.0f;
+    const float avg_vbl = seconds > 0 ? (float)wiiu_vblanks / (float)seconds : 0.0f;
+    const char *game = strrchr(selectedFilePath, '/');
+    game = game ? game + 1 : (selectedFilePath[0] ? selectedFilePath : "BIOS (no disc)");
+
     if (FILE *f = fopen(NULLDC_HOME "last_run.txt", "w"))
     {
-        fprintf(f, "file '%s' dynarec %d: %d s, vblanks %u renders %u", selectedFilePath, g_dynarec_preset, seconds,
-                wiiu_vblanks, wiiu_renders);
-        fprintf(f, "\n");
+        fprintf(f, "game '%s' | time %d s | avg FPS: %.1f (vblanks/s: %.1f) | res: %dx%d | fastmem: %d | fskip: %d\n",
+                game, seconds, avg_fps, avg_vbl, wiiu_rt_width, wiiu_rt_width * 3 / 4, g_fastmem_preset, g_frameskip_preset);
         fclose(f);
+    }
+    // Append to permanent benchmark log so testers can review all tested games at once
+    if (FILE *b = fopen(NULLDC_HOME "benchmarks.txt", "a"))
+    {
+        fprintf(b, "%-40s | %4d s | Avg FPS: %5.1f | VBl/s: %5.1f | Res: %dx%d | Fastmem: %d | FSkip: %d | RDelay: %d\n",
+                game, seconds, avg_fps, avg_vbl, wiiu_rt_width, wiiu_rt_width * 3 / 4,
+                g_fastmem_preset, g_frameskip_preset, g_render_delay_preset);
+        fclose(b);
     }
 }
 
@@ -580,11 +598,67 @@ static int app_main()
         if (!rt_width_set)
             wiiu_gx2_set_render_width(opt_width);
         wiiu_audio_min_speed = opt_keep_pitch ? 0.97f : 0.60f;
-        printf("[wiiu] options: fastmem %d%s, light gun %s%s, 3D %dx%d%s, sound when slow: %s\n", g_fastmem_preset,
-               fastmem >= 0 ? " (wiiu.cfg)" : "", g_controller_type == 1 ? "on" : "off",
+
+        // Ensure a user-editable user_controls.cfg template exists on the SD card
+        const char *custom_cfg = NULLDC_HOME "user_controls.cfg";
+        if (FILE *chk = fopen(custom_cfg, "r"))
+            fclose(chk);
+        else if (FILE *out = fopen(custom_cfg, "w"))
+        {
+            fputs("# nullDC for Wii U - Custom Controls (used when Control layout = Custom)\n"
+                  "# GamePad / Pro / Classic tokens: classic_a, classic_b, classic_x, classic_y,\n"
+                  "#   classic_l, classic_zl, classic_r, classic_zr, classic_plus, classic_minus\n"
+                  "# Wii Remote tokens: a, b, 1, 2, minus, plus, home, nunchuck_z, nunchuck_c\n\n"
+                  "[Dreamcast_Wiimote]\n"
+                  "A = classic_b\nA = a\n"
+                  "B = classic_a\nB = b\n"
+                  "X = classic_y\nX = 2\n"
+                  "Y = classic_x\nY = 1\n"
+                  "L = classic_l\nL = classic_zl\nL = minus\nL = nunchuck_z\n"
+                  "R = classic_r\nR = classic_zr\nR = plus\n"
+                  "START = classic_plus\nSTART = home\n"
+                  "D-PAD = on\nSTICK = classic_stick\n", out);
+            fclose(out);
+        }
+
+        const int ctrl_layout = wiiu_picker_ctrl_layout(home);
+        int special_layout = 0;   // 0: SPECIAL_LAYOUT_OFF (Dreamcast physical position)
+        if (ctrl_layout == 1)     // 1: Nintendo (A=A, B=B, X=X, Y=Y)
+        {
+            const char *nin_cfg = NULLDC_HOME "data/nintendo_controls.cfg";
+            if (FILE *out = fopen(nin_cfg, "w"))
+            {
+                fputs("[Dreamcast_Wiimote]\n"
+                      "A = classic_a\nA = a\n"
+                      "B = classic_b\nB = b\n"
+                      "X = classic_x\nX = 2\n"
+                      "Y = classic_y\nY = 1\n"
+                      "L = classic_l\nL = classic_zl\nL = minus\nL = nunchuck_z\n"
+                      "R = classic_r\nR = classic_zr\nR = plus\n"
+                      "START = classic_plus\nSTART = home\n"
+                      "D-PAD = on\nSTICK = classic_stick\n", out);
+                fclose(out);
+            }
+            user_controls_load(nin_cfg);
+            special_layout = 3;   // SPECIAL_LAYOUT_USER_CFG
+        }
+        else if (ctrl_layout == 2)   // 2: Custom (sd:/wiiu/nulldc/user_controls.cfg)
+        {
+            user_controls_load(custom_cfg);
+            special_layout = 3;   // SPECIAL_LAYOUT_USER_CFG
+        }
+        for (const wiiu_preset *p = wiiu_presets; p->name; p++)
+            if (!strcmp(p->name, "g_special_layout_preset"))
+                *p->value = special_layout;
+
+        wiiu_picker_extra_options(home, &g_ratio_preset, &g_cable_preset, &g_frameskip_preset, &g_render_delay_preset);
+        wiiu_gx2_set_vmu_mode(wiiu_picker_vmu_mode(home));
+
+        printf("[wiiu] options: fastmem %d%s, light gun %s%s, 3D %dx%d%s, sound when slow: %s, ctrl_layout: %d, cable: %d, fskip: %d, rdelay: %d\n",
+               g_fastmem_preset, fastmem >= 0 ? " (wiiu.cfg)" : "", g_controller_type == 1 ? "on" : "off",
                controller_type_set ? " (wiiu.cfg)" : "", rt_width_set ? wiiu_rt_width : opt_width,
                (rt_width_set ? wiiu_rt_width : opt_width) * 3 / 4, rt_width_set ? " (wiiu.cfg)" : "",
-               opt_keep_pitch ? "keeps pitch" : "slows down");
+               opt_keep_pitch ? "keeps pitch" : "slows down", ctrl_layout, g_cable_preset, g_frameskip_preset, g_render_delay_preset);
     }
     printf("[wiiu] file '%s'\n", selectedFilePath);
 
