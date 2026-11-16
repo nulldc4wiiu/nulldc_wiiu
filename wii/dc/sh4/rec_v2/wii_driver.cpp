@@ -109,6 +109,8 @@ extern "C" int get_debug_loop();
 extern "C" int get_bcache_preset();	// main.cpp: 0=off (default), 1=flat dispatch cache
 extern "C" int get_dyn_ic_preset();	// main.cpp: 0=off (default), 1=call+jump, 2=+rts
 extern "C" int get_fpu_pin_preset();	// main.cpp: 0=off (default), 1=pin fr[0..15] to f14..f29
+extern "C" int g_exp_jit_tlive, g_exp_jit_fconst;	// below: Review 3 K1, K2
+extern u32 g_cnt_fipr;
 extern "C" int get_jit_align_preset();	// main.cpp: 0=off (default), 1=32-byte-align block entries
 extern "C" int get_ifb_flush_preset();	// main.cpp: 0=off (default, full bracket), 1=selective
 extern "C" int get_ifb_probe_preset();	// main.cpp: 0=off (default), 1=count ifb sites per opcode
@@ -274,9 +276,20 @@ struct
 	u32  cr0_bit;        // BI_CR0_xx index holding the condition
 	bool cr0_invert;     // sr_T is the INVERSE of that bit (e.g. >= is !<)
 
+	// jit_tlive (Review 3 K1): blocks ending in a delay-slot branch capture T in shop_jcond, several ops after
+	// the compare that produced it (dt; mov.l; bt.s), so T-FORWARDING above can't help and the jcond reloads the T
+	// the producer stored a few instructions earlier: a load-hit-store, 28% of DOA2's hottest block. ppc_djump (r31)
+	// is free until that jcond (the block's own jcond, jdyn and exit write it; C calls preserve it), so every T store before the
+	// jcond also copies the value there, and the jcond finds it in place. t_copy_ok: a jcond follows this op;
+	// t_in_djump: r31 holds the current T. Every op that writes T or SR clears it; ppc_sh_store of T sets it again.
+	bool t_copy_ok;
+	bool t_in_djump;
+
 	void Reset()
 	{
 		has_jcond=false;
+		t_copy_ok=false;
+		t_in_djump=false;
 		t_in_rarg0=false;
 		t_exit_cr0=false;
 		cr0_live=false;
@@ -626,6 +639,12 @@ void ppc_sh_store(u32 D,u32 sh4_reg)
 		}
 	}
 	ppc_stw(D,ppc_contex,Sh4cntx.offset(sh4_reg));
+	// jit_tlive: a jcond later in this block will read T: keep a copy in r31 (see compile_state.t_copy_ok)
+	if (sh4_reg==reg_sr_T && compile_state.t_copy_ok)
+	{
+		ppc_ori(ppc_djump,D,0);		// mr r31, D
+		compile_state.t_in_djump=true;
+	}
 }
 void ppc_sh_store(u32 D,shil_param prm)
 {
@@ -2060,6 +2079,21 @@ extern "C" void hotblocks_reset()
 	s_hb_overflow = 0;
 }
 
+extern "C" { int g_exp_jit_tlive = 1, g_exp_jit_fconst = 1; }   // Review 3 K1 (T in r31 until the jcond), K2 (float immediates): on (console k12c: DOA2 fights +0.8%)
+u32 g_cnt_tlive, g_cnt_fconst, g_cnt_fipr;   // compiled sites using them (sampler counters line)
+// jit_fconst: float immediates the JIT loads into pinned FRs, written once each, never stored to again; full: nullptr
+static u32 jit_fconst_pool[256] __attribute__((aligned(32)));
+static u32 jit_fconst_n;
+static const u32 *jit_fconst(u32 bits)
+{
+	for (u32 i = 0; i < jit_fconst_n; i++)
+		if (jit_fconst_pool[i] == bits)
+			return &jit_fconst_pool[i];
+	if (jit_fconst_n == 256)
+		return nullptr;
+	jit_fconst_pool[jit_fconst_n] = bits;
+	return &jit_fconst_pool[jit_fconst_n++];
+}
 // Compile time: claim a slot for this block. Returns its index, or -1 if
 // unavailable — the caller needs the index to reach both the descriptor and
 // the counter, which live in separate arrays.
@@ -3128,9 +3162,30 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		ppc_stw(ppc_rarg0,ppc_rarg1,lo);
 	}
 
+	// jit_tlive: where the block's jcond is, if any (T stores before it are mirrored into r31)
+	size_t jcond_at = (size_t)-1;
+	if (g_exp_jit_tlive)
+		for (size_t k = 0; k < block->oplist.size(); k++)
+			if (block->oplist[k].op == shop_jcond)
+			{
+				jcond_at = k;
+				break;
+			}
+
 	for (size_t i = 0; i < block->oplist.size(); i++)
 	{
 		shil_opcode* op=&block->oplist[i];
+
+		// jit_tlive: every op that writes T or SR (or may change r31) ends the copy; a ppc_sh_store of T within
+		// the op renews it
+		{
+			const auto writes = [](const shil_param &p) {
+				return p.is_reg() && (p._reg == reg_sr_T || p._reg == reg_sr_status);
+			};
+			if (op->op == shop_ifb || op->op == shop_sync_sr || op->op == shop_jdyn || writes(op->rd) || writes(op->rd2))
+				compile_state.t_in_djump = false;
+			compile_state.t_copy_ok = g_exp_jit_tlive && jcond_at != (size_t)-1 && i < jcond_at;
+		}
 
 		// T-FORWARDING: latch whether the PREVIOUS op left sr_T in rarg0, then
 		// clear, so this op starts clean and only its own binop_end can set the
@@ -3823,10 +3878,13 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				// When the compare that produced it is the op right before this
 				// one, it is still in rarg0 — take it from there instead of
 				// reloading the value we just stored.
-				if (t_prev && op->rs1.is_reg() && op->rs1._reg==reg_sr_T)
+				if (compile_state.t_in_djump && op->rs1.is_reg() && op->rs1._reg==reg_sr_T)
+					g_cnt_tlive++;	// jit_tlive: every T store since the producer also went to r31
+				else if (t_prev && op->rs1.is_reg() && op->rs1._reg==reg_sr_T)
 					ppc_ori(ppc_djump,ppc_rarg0,0);		// mr djump,rarg0
 				else
 					ppc_sh_load(ppc_djump,op->rs1);
+				compile_state.t_in_djump=false;
 			}
 			break;
 			
@@ -3860,6 +3918,25 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				{
 					fmove_reg(op->rd._reg,op->rs1._reg);
 					break;
+				}
+
+				// jit_fconst (Review 3 K2): an immediate into a pinned FR (fldi0/fldi1, ~15% of DOA2's hottest block)
+				// went li; stw slot; lfs fr,slot: the lfs hits the store it follows. The context slot still gets the
+				// value, but the FPR loads it from a constant pool instead (append-only, never reset, so it outlives
+				// code cache flushes)
+				if (g_exp_jit_fconst && op->rs1.is_imm() && op->rd.is_r32f() && get_fpu_pin_preset())
+				{
+					const ppc_freg rf=GetFloatReg(op->rd._reg);
+					const u32 *k=rf!=ppc_finvalid ? jit_fconst(op->rs1._imm) : nullptr;
+					if (k)
+					{
+						ppc_li(ppc_rarg0,op->rs1._imm);
+						ppc_stw(ppc_rarg0,ppc_contex,Sh4cntx.offset(op->rd._reg));
+						const u32 lo=ppc_addr_high(ppc_rarg1,(void*)k);
+						ppc_lfs(rf,ppc_rarg1,lo);
+						g_cnt_fconst++;
+						break;
+					}
 				}
 
 				// Resolve dest: a pinned (integer) rd is written in place; a
