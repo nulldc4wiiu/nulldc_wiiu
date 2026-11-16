@@ -172,6 +172,7 @@ extern int g_exp_sq_fast, g_exp_aica_thread;
 extern int wiiu_exp_tr_depth;   // present_gx2.cpp: auto-sorted translucent polygons with depth >= and no depth writes
 extern int wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern "C" int g_exp_ps_ftrv, g_exp_fm_x, g_exp_jit_tlive, g_exp_jit_fconst;   // wii_driver.cpp
+extern "C" int g_exp_sq_inline;   // render_gx2.cpp (J1: the JIT's inline TA store-queue write)
 
 struct wiiu_preset { const char *name; int *value; };
 extern const wiiu_preset wiiu_presets[];
@@ -340,6 +341,8 @@ static void load_wiiu_cfg()
             g_exp_jit_tlive = atoi(value);   // Review 3 K1: T kept in r31 until a delay-slot branch reads it
         else if (!strcmp(key, "jit_fconst"))
             g_exp_jit_fconst = atoi(value);   // Review 3 K2: float immediates from a constant pool, not stw+lfs
+        else if (!strcmp(key, "sq_inline"))
+            g_exp_sq_inline = atoi(value);   // J1: TA store-queue blocks written by the JIT (2: vertex starts counted inline too)
         else if (!strcmp(key, "gd_async"))
             { extern int g_exp_gd_async; g_exp_gd_async = atoi(value); }   // H1 v2: paced GD-DMA waits for the SD read-ahead (with g_gdrom_delay)
         else if (!strcmp(key, "fastmem"))

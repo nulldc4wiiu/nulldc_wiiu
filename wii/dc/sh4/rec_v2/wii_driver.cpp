@@ -2298,6 +2298,12 @@ void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
 #if defined(__WIIU__)
 void FASTCALL wiiu_sqw_fast(u32 dst);
+// sq_inline (J1): shop_pref writes TA store-queue blocks into the frame itself, from g_ta_fast
+// (wiiu/render_gx2.cpp, one cache line: next, end, sq_mask[2], skip, vfast, nvert, nstrip); the parse and the rest
+// stay in C. sq_inline=2 also counts a vertex start inline when vfast >= 0
+extern "C" { extern u32 g_ta_fast[8]; extern int g_exp_sq_inline; void wiiu_ta_scan(const u32 *b);
+             void FASTCALL wiiu_sqw_cold(u32 dst); }
+enum { TAF_NEXT = 0, TAF_END = 4, TAF_MASK = 8, TAF_SKIP = 16, TAF_VFAST = 20, TAF_NVERT = 24, TAF_NSTRIP = 28 };
 #endif
 
 // Native call targets for fsqrt/fsrra. Broadway has no hardware fsqrt and its
@@ -2380,7 +2386,8 @@ struct ColdFrag
 {
 	ppc_label* beq;     // the forward beq site to patch to the cold entry
 	void*      done;    // join point in the main stream (backward target)
-	u8         kind;    // 0=read scalar, 1=read pair(64), 2=write scalar, 3=write pair
+	u8         kind;    // 0=read scalar, 1=read pair(64), 2=write scalar, 3=write pair,
+	                    // 4=store queue in C (wiiu_sqw_cold, rarg0=dst), 5=TA block parse (wiiu_ta_scan, r6=slot)
 	u8         sz;      // 1/2/4 (scalar)
 	u8         rdreg;   // read: destination reg (rrv0 or pinned)
 	u8         datareg; // write: data reg (rarg1 or pinned)
@@ -2468,7 +2475,16 @@ static void FlushCold()
 				else                ppc_call(&WriteMem32);
 			}
 		}
-		else                             // --- write pair (64): WriteMem64 ---
+#if defined(__WIIU__)
+		else if (c.kind==4)              // --- sq_inline: not TA, or the frame is full: the C path ---
+			ppc_call(&wiiu_sqw_cold);    // rarg0 still holds dst
+		else if (c.kind==5)              // --- sq_inline: the block (already in the frame) needs parsing ---
+		{
+			ppc_ori(ppc_rarg0,ppc_r6,0);
+			ppc_call(&wiiu_ta_scan);
+		}
+#endif
+		else if (c.kind==3)              // --- write pair (64): WriteMem64 ---
 		{
 			if (c.fdreg!=0xFF)
 			{
@@ -4853,6 +4869,76 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					ppc_call(&do_sqw_mmu);			// do_sqw reloads rarg0=addr arg
 				else
 #if defined(__WIIU__)
+				if (g_exp_sq_inline)
+				{
+					// sq_inline (J1): a TA block goes straight into the frame being built, no call. rarg0 = dst
+					// stays intact for the cold paths; scratch r4-r8, r11, f0-f3 (op-local); r12 is not touched.
+					const u32 lo=ppc_addr_high(ppc_r11,(void*)g_ta_fast);	// lis r11; lo+field fits (32-aligned)
+					ppc_rlwinmx(ppc_r4,ppc_rarg0,29,29,29,0);		// (dst & 0x20) >> 3: this queue's mask
+					ppc_add(ppc_r4,ppc_r4,ppc_r11);
+					ppc_lwz(ppc_r5,ppc_r4,lo+TAF_MASK);
+					ppc_and_(ppc_r5,ppc_r5,ppc_rarg0);			// 0: QACR area is the TA, dst below 0x800000
+					ppc_label* cold_c1=ppc_CreateLabel();
+					ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);			// bne: C path
+					ppc_lwz(ppc_r6,ppc_r11,lo+TAF_NEXT);
+					ppc_lwz(ppc_r7,ppc_r11,lo+TAF_END);
+					ppc_cmplw(ppc_r6,ppc_r7);
+					ppc_label* cold_c2=ppc_CreateLabel();
+					ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);			// bge: frame full, C counts the drop
+					ppc_rlwinmx(ppc_r4,ppc_rarg0,0,26,26,0);		// dst & 0x20: which queue
+					ppc_oris(ppc_r4,ppc_r4,(u32)(uintptr_t)sq_both>>16);	// sq_both is 256-aligned
+					ppc_ori(ppc_r4,ppc_r4,(u32)(uintptr_t)sq_both&0xFFFF);
+					ppc_dcbz(0,ppc_r6);					// only after the bound check
+					ppc_lfd(ppc_f0,ppc_r4,0);  ppc_lfd(ppc_f1,ppc_r4,8);
+					ppc_lfd(ppc_f2,ppc_r4,16); ppc_lfd(ppc_f3,ppc_r4,24);
+					ppc_stfd(ppc_f0,ppc_r6,0);  ppc_stfd(ppc_f1,ppc_r6,8);
+					ppc_stfd(ppc_f2,ppc_r6,16); ppc_stfd(ppc_f3,ppc_r6,24);
+					ppc_addi(ppc_r7,ppc_r6,32);
+					ppc_stw(ppc_r7,ppc_r11,lo+TAF_NEXT);
+					ppc_lwz(ppc_r8,ppc_r11,lo+TAF_SKIP);
+					ppc_addic(ppc_r8,ppc_r8,(u32)-1,1);			// addic. skip-1
+					ppc_label* colds[4]={cold_c1,cold_c2,0,0};
+					int ncold=3;
+					if (g_exp_sq_inline>=2)
+					{
+						// skip was 0: a vertex (ParaType 7, PCW bits 31-29) in a polygon list is only counted by
+						// the scanner: skip = vfast, nvert++, nstrip += EndOfStrip (bit 28). Anything else: C
+						ppc_label* cont=ppc_CreateLabel();
+						ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);		// bge: skip was > 0, a continuation
+						ppc_lwz(ppc_r9,ppc_r4,0);			// the PCW, from the store queue
+						ppc_rlwinmx(ppc_r10,ppc_r9,3,29,31,0);
+						ppc_cmpwi(ppc_r10,7);
+						colds[2]=ppc_CreateLabel();
+						ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);		// bne: not a vertex
+						ppc_lwz(ppc_r8,ppc_r11,lo+TAF_VFAST);
+						ppc_cmpwi(ppc_r8,0);
+						colds[3]=ppc_CreateLabel();
+						ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt: sprite, modifier volume or no list
+						ncold=4;
+						ppc_lwz(ppc_r5,ppc_r11,lo+TAF_NVERT);
+						ppc_addi(ppc_r5,ppc_r5,1);
+						ppc_stw(ppc_r5,ppc_r11,lo+TAF_NVERT);
+						ppc_rlwinmx(ppc_r9,ppc_r9,4,31,31,0);
+						ppc_lwz(ppc_r5,ppc_r11,lo+TAF_NSTRIP);
+						ppc_add(ppc_r5,ppc_r5,ppc_r9);
+						ppc_stw(ppc_r5,ppc_r11,lo+TAF_NSTRIP);
+						cont->MarkLabel();
+					}
+					else
+					{
+						colds[2]=ppc_CreateLabel();
+						ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// skip was 0: parse it in C
+					}
+					ppc_stw(ppc_r8,ppc_r11,lo+TAF_SKIP);
+					void* done=emit_GetCCPtr();
+					for (int k=0;k<ncold;k++)
+					{
+						ColdFrag& c=s_cold[s_cold_n++];
+						c.beq=colds[k]; c.done=done; c.kind=k<2?4:5;
+						c.fdreg=0xFF; c.fuct=0;
+					}
+				}
+				else
 					ppc_call(&wiiu_sqw_fast);		// wiiu/render_gx2.cpp: TA data in one call
 #else
 					ppc_call(&do_sqw_nommu);

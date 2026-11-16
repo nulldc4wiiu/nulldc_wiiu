@@ -37,9 +37,48 @@ extern "C" int get_render_delay_preset();
 extern "C" int get_y_scaler_preset(), get_h_scaler_preset();
 static WiiuFrame *build = &frames[0];   // emulator thread: the frame collecting TA input
 static WiiuFrame *dec;                  // intake thread (wiiu_ta_decode): the frame FrameDecoder writes
-// the TA scanner (below): what FrameDecoder will make of the frame, counted as it arrives: StartRender times the render-done interrupt
-// by them (the decoded counts aren't known until the intake thread decodes)
-static u32 scan_vertices, scan_strips;
+// sq_inline (J1): the JIT writes TA store-queue blocks into the frame itself (shop_pref, wii_driver.cpp), from
+// this one cache line: the next free slot, the frame's end, per store queue a mask that is 0x01800000 when its QACR
+// area is the TA (dst & mask == 0: TA polygon data) and all ones otherwise, and the scanner's skip count (blocks
+// that continue a 64-byte record need no parse). While a frame is built, next is the block count: ta_sync() writes
+// it back to build->n_ta at every ordering point (TA events, DMA, the C store-queue path, render start, vblank).
+// sq_inline=2 also counts a vertex start inline: vfast is the skip a vertex sets (its size in blocks - 1) while
+// the scanner would only count it (a polygon list, not sprites), -1 otherwise. nvert and nstrip are the TA
+// scanner's counts of what FrameDecoder will make of the frame: StartRender times the render-done interrupt by
+// them (the decoded counts aren't known until the intake thread decodes).
+struct WiiuTaFast
+{
+    u32 *next, *end;
+    u32 sq_mask[2];
+    s32 skip, vfast;
+    u32 nvert, nstrip;
+};
+extern "C" { WiiuTaFast g_ta_fast __attribute__((aligned(32))) = { nullptr, nullptr, { ~0u, ~0u }, 0, -1, 0, 0 };
+             int g_exp_sq_inline = 2; }   // on: 2 (the console A/B r2c: DOA2 fights ~+4%); 0 turns it off
+extern int g_exp_sq_fast;
+static u32 n_synced;   // build->n_ta as of the last sync
+static inline void ta_sync()
+{
+    if (!g_exp_sq_inline)
+        return;
+    const u32 n = (u32)(g_ta_fast.next - &build->ta[0][0]) / 8;
+    extern u32 wiiu_ta_sq_blocks;
+    wiiu_ta_sq_blocks += n - n_synced;   // between syncs only the JIT's inline writes move next
+    build->n_ta = n_synced = n;
+}
+static inline void ta_cursor()
+{
+    g_ta_fast.next = &build->ta[build->n_ta][0];
+    g_ta_fast.end = &build->ta[WIIU_MAX_TA_BLOCKS][0];
+    n_synced = build->n_ta;
+}
+// QACR0/1 writes (dc/sh4/ccn.cpp) and renderer init: which store queue writes may go inline
+extern "C" void wiiu_sq_masks()
+{
+    const u32 a[2] = { CCN_QACR0.Area, CCN_QACR1.Area };
+    for (int i = 0; i < 2; i++)
+        g_ta_fast.sq_mask[i] = g_exp_sq_inline && g_exp_sq_fast && a[i] == 4 ? 0x01800000u : 0xFFFFFFFFu;
+}
 
 // ---- colour conversion: everything ends up as bytes R, G, B, A in memory --------------------------------
 
@@ -433,7 +472,13 @@ static void add_background()
     build->has_bg = true;
 }
 
-bool InitRenderer() { printf("[wiiu] GX2 renderer\n"); return TileAccel.Init(); }
+bool InitRenderer()
+{
+    printf("[wiiu] GX2 renderer\n");
+    ta_cursor();
+    wiiu_sq_masks();
+    return TileAccel.Init();
+}
 void TermRenderer()
 {
     TileAccel.Term();
@@ -444,6 +489,7 @@ void ThreadEnd() {}
 void wiiu_emu_safe_point();
 void VBlank()
 {
+    ta_sync();   // the status line's store queue count stays at most a frame behind
     wiiu_vblanks++;
     wiiu_fb_capture();
     wiiu_emu_safe_point();
@@ -451,10 +497,11 @@ void VBlank()
 // the game asked the PVR to render what the TA collected: hand the frame to the GX2 thread
 void StartRender()
 {
+    ta_sync();
     wiiu_renders++;
     // render-done timing, as gxRend.cpp schedules it for each render_delay preset
     // as the scanner counted them: the geometry itself is decoded later, on the intake thread
-    const u32 vertices = scan_vertices, strips = scan_strips;
+    const u32 vertices = g_ta_fast.nvert, strips = g_ta_fast.nstrip;
     const int mode = get_render_delay_preset();
     if (mode == 1)
     {
@@ -501,7 +548,8 @@ void StartRender()
     build->decoded = false;
     build = wiiu_frame_publish(build, frames);
     build->n_ta = build->n_ta_ev = 0;   // the next render's input starts here
-    scan_vertices = scan_strips = 0;
+    g_ta_fast.nvert = g_ta_fast.nstrip = 0;
+    ta_cursor();
 }
 void EndRender() {}
 // ---- emulator thread: TA input ----------------------------------------------------------------------------
@@ -511,28 +559,39 @@ void EndRender() {}
 // skips the second half of 64-byte records (headers of polygon types 2 and 4, vertices of polygon types 5, 6 and
 // 11-14, sprite and modifier volume vertices) so their data can't be mistaken for a control word, and starts and
 // ends lists as ta_main_ctrl does (plugs/drkPvr/ta.h).
-static u32 scan_list = ListType_None, scan_skip, scan_vertex = 1;   // scan_vertex: a vertex's size in blocks
+static u32 scan_list = ListType_None, scan_vertex = 1;   // scan_vertex: a vertex's size in blocks (skip: g_ta_fast)
 static bool scan_sprite;               // vertices are sprites (4 corners each)
 u32 wiiu_dropped_ta_blocks;   // TA input that didn't fit a frame (WIIU_MAX_TA_BLOCKS), for the log
 u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // how the game feeds the TA (status line): store queue vs DMA
 
 int g_exp_sq_fast;
-static void scan_block(const u32 *b);
+static void scan_parse(const u32 *b);
+// sq_inline: the JIT's cold path for a block that needs parsing (skip is 0; the block is already in the frame)
+extern "C" void wiiu_ta_scan(const u32 *b) { scan_parse(b); }
+// sq_inline=2: whether the JIT may count the next vertex start itself (see WiiuTaFast)
+static inline void scan_vfast()
+{
+    g_ta_fast.vfast = scan_list != ListType_None && !IsModVolList(scan_list) && !scan_sprite ? (s32)scan_vertex - 1 : -1;
+}
 
 static void scan_reset()
 {
     scan_list = ListType_None;
-    scan_skip = 0;
+    g_ta_fast.skip = 0;
     scan_vertex = 1;
+    scan_vfast();
 }
 
-static void scan_block(const u32 *b)
+static inline void scan_block(const u32 *b)
 {
-    if (scan_skip)
-    {
-        scan_skip--;
-        return;
-    }
+    if (g_ta_fast.skip)
+        g_ta_fast.skip--;
+    else
+        scan_parse(b);
+}
+
+static void scan_parse(const u32 *b)
+{
     PCW pcw; pcw.full = b[0];
     switch (pcw.ParaType)
     {
@@ -558,7 +617,7 @@ static void scan_block(const u32 *b)
             if (uid == 0xFFFFFFFF)
                 break;   // no polygon type: the parser skips it (TA_GUARD)
             const u32 pdid = (u8)uid;
-            scan_skip = (uid >> 30) - 1;
+            g_ta_fast.skip = (uid >> 30) - 1;
             scan_vertex = pdid == 5 || pdid == 6 || pdid >= 11 ? 2 : 1;
         }
         break;
@@ -572,29 +631,31 @@ static void scan_block(const u32 *b)
         scan_sprite = true;
         break;
     case ParamType_Vertex_Parameter:
-        scan_skip = scan_vertex - 1;
+        g_ta_fast.skip = scan_vertex - 1;
         if (scan_list != ListType_None && !IsModVolList(scan_list))
         {
             if (scan_sprite)
             {
-                scan_vertices += 4;
-                scan_strips++;
+                g_ta_fast.nvert += 4;
+                g_ta_fast.nstrip++;
             }
             else
             {
-                scan_vertices++;
-                scan_strips += pcw.EndOfStrip;
+                g_ta_fast.nvert++;
+                g_ta_fast.nstrip += pcw.EndOfStrip;
             }
         }
-        break;
+        return;   // a vertex changes nothing scan_vfast reads
     default:
         break;   // user tile clip, object list set, reserved: 32 bytes
     }
+    scan_vfast();
 }
 
 // ta.cpp's store queue and DMA entry points (instead of the parser)
 void wiiu_ta_input(const u32 *data, u32 blocks)
 {
+    ta_sync();
     wiiu_ta_dma_blocks += blocks;
     for (u32 i = 0; i < blocks; i++, data += 8)
     {
@@ -611,13 +672,15 @@ void wiiu_ta_input(const u32 *data, u32 blocks)
         else
             wiiu_dropped_ta_blocks++;
     }
+    if (g_exp_sq_inline)
+        ta_cursor();
 }
 
 // The JIT's store-queue flush without the MMU (pref @Rn into 0xE0000000-0xE3FFFFFF), instead of do_sqw_nommu,
 // TAWriteSQ, libPvr_TaSQ and wiiu_ta_input in turn: TA polygon data, the common case by far (Soulcalibur sends
 // ~19,000 blocks a frame this way), goes straight into the frame being built; anything else takes the full path.
 void FASTCALL do_sqw_nommu(u32 dst);
-void FASTCALL wiiu_sqw_fast(u32 dst)
+static inline __attribute__((always_inline)) void sqw_c(u32 dst)
 {
     const u32 qacr = (dst & 0x20) == 0 ? CCN_QACR0.Area : CCN_QACR1.Area;
     const u32 address = (dst & 0x03FFFFE0) | (qacr << 26);
@@ -644,8 +707,8 @@ void FASTCALL wiiu_sqw_fast(u32 dst)
     if (g_exp_sq_fast && build->n_ta < WIIU_MAX_TA_BLOCKS)
     {
         // exp_sq_fast: a block continuing a vertex needs no parsing, and four doubles move it in half the instructions
-        if (scan_skip)
-            scan_skip--;
+        if (g_ta_fast.skip)
+            g_ta_fast.skip--;
         else
             scan_block(data);
         u32 *d = build->ta[build->n_ta++];
@@ -667,8 +730,22 @@ void FASTCALL wiiu_sqw_fast(u32 dst)
         wiiu_dropped_ta_blocks++;
 }
 
+// the JIT's call (shop_pref) without sq_inline
+void FASTCALL wiiu_sqw_fast(u32 dst)
+{
+    sqw_c(dst);
+}
+// sq_inline: shop_pref's cold path (not TA, or the frame is full), with the JIT's block count around it
+extern "C" void FASTCALL wiiu_sqw_cold(u32 dst)
+{
+    ta_sync();
+    sqw_c(dst);
+    ta_cursor();
+}
+
 static void ta_event(u32 what)
 {
+    ta_sync();   // the event's index is the block count so far
     if (build->n_ta_ev < WIIU_MAX_TA_EVENTS)
         build->ta_ev[build->n_ta_ev++] = { build->n_ta, what };
 }

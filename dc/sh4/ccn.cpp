@@ -49,6 +49,13 @@ CCN_PTEA_type  CCN_PTEA;
 CCN_QACR_type  CCN_QACR0;
 CCN_QACR_type  CCN_QACR1;
 
+#ifdef __WIIU__
+// QACR0/1: the JIT's inline store-queue write (sq_inline, wiiu/render_gx2.cpp) keeps a mask per queue
+extern "C" void wiiu_sq_masks();
+static void CCN_QACR0_write(u32 value) { CCN_QACR0.reg_data = value; wiiu_sq_masks(); }
+static void CCN_QACR1_write(u32 value) { CCN_QACR1.reg_data = value; wiiu_sq_masks(); }
+#endif
+
 // ---------------------------------------------------------------------------
 // MMUCR write handler
 // Logs MMU enable/disable transitions; clears self-clearing TI bit.
@@ -290,15 +297,27 @@ void ccn_Init()
     CCN[(CCN_PTEA_addr&0xFF)>>2].data32        = &CCN_PTEA.reg_data;
 
     // CCN QACR0 0xFF000038
+#ifdef __WIIU__
+    CCN[(CCN_QACR0_addr&0xFF)>>2].flags         = REG_32BIT_READWRITE | REG_READ_DATA;
+    CCN[(CCN_QACR0_addr&0xFF)>>2].readFunction  = 0;
+    CCN[(CCN_QACR0_addr&0xFF)>>2].writeFunction = CCN_QACR0_write;
+#else
     CCN[(CCN_QACR0_addr&0xFF)>>2].flags         = REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA;
     CCN[(CCN_QACR0_addr&0xFF)>>2].readFunction  = 0;
     CCN[(CCN_QACR0_addr&0xFF)>>2].writeFunction = 0;
+#endif
     CCN[(CCN_QACR0_addr&0xFF)>>2].data32        = &CCN_QACR0.reg_data;
 
     // CCN QACR1 0xFF00003C
+#ifdef __WIIU__
+    CCN[(CCN_QACR1_addr&0xFF)>>2].flags         = REG_32BIT_READWRITE | REG_READ_DATA;
+    CCN[(CCN_QACR1_addr&0xFF)>>2].readFunction  = 0;
+    CCN[(CCN_QACR1_addr&0xFF)>>2].writeFunction = CCN_QACR1_write;
+#else
     CCN[(CCN_QACR1_addr&0xFF)>>2].flags         = REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA;
     CCN[(CCN_QACR1_addr&0xFF)>>2].readFunction  = 0;
     CCN[(CCN_QACR1_addr&0xFF)>>2].writeFunction = 0;
+#endif
     CCN[(CCN_QACR1_addr&0xFF)>>2].data32        = &CCN_QACR1.reg_data;
 }
 
