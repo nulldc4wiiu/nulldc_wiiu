@@ -313,6 +313,11 @@ static u32 modvol_count, mv_base, quad_base, shad_scale;
 // the polygons' own depth mode and Z-write bit (Flycast does the same)
 int wiiu_exp_tr_depth = 1;
 static bool trans_autosort;
+// mv_bbox (Review 0, on by default since Review 1; mv_bbox=0 turns it off): each closing volume's screen box in canvas pixels (x0, y0, x1, y1; x0 = -1e30: whole screen), so
+// its stencil resolve and clear quads fill only the box instead of the whole target
+int wiiu_mv_bbox = 1;
+int wiiu_mv_bbox_check;   // mv_bbox_check=1 (instrumented): every 30th frame with volumes, drawn with and without boxes, compared
+static float mv_box[WIIU_MAX_MV_PARAMS][4];
 static u32 strip_count, drawn_frame_seq, last_3d_vblank;
 // translucent strips in drawing order: as submitted when the game pre-sorts them, else far to near
 static u32 trans_order[WIIU_MAX_STRIPS], trans_count;
@@ -345,6 +350,7 @@ struct Scene
     u32 strip_idx[WIIU_MAX_STRIPS], strip_count, idx_owner, idx_count;
     WiiuModVol modvols[WIIU_MAX_MV_PARAMS];
     u32 modvol_count, mv_base, quad_base, shad_scale;
+    float mv_box[WIIU_MAX_MV_PARAMS][4];
     float screen[4];   // the geo shaders' u_screen for this scene
     u32 trans_order[WIIU_MAX_STRIPS], trans_count;
     bool trans_autosort;   // the PVR sorts translucent polygons itself (pre-sort mode off)
@@ -992,6 +998,31 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         o.u = o.v = 0.0f;
     }
     sc->quad_base = sc->mv_base + f->n_mv_tris * 3;
+    if (wiiu_mv_bbox || wiiu_mv_bbox_check)
+    {
+        // the box of every triangle since the previous closing header: those are what set bit 0x01 for this volume
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        bool whole = false;
+        for (u32 i = 0; i < f->n_mp; i++)
+        {
+            const WiiuModVol &m = f->mp[i];
+            for (u32 k = m.first * 3; k < (m.first + m.count) * 3; k++)
+            {
+                const float x = f->mv[k].x, y = f->mv[k].y;
+                if (!(x > -1e9f && x < 1e9f && y > -1e9f && y < 1e9f))   // NaN or huge: no trustworthy box
+                    whole = true;
+                x0 = x < x0 ? x : x0; x1 = x > x1 ? x : x1;
+                y0 = y < y0 ? y : y0; y1 = y > y1 ? y : y1;
+            }
+            if (m.mode != 1 && m.mode != 2)
+                continue;
+            float *b = sc->mv_box[i];
+            b[0] = whole ? -1e30f : x0; b[1] = y0; b[2] = x1; b[3] = y1;
+            x0 = y0 = 1e30f;
+            x1 = y1 = -1e30f;
+            whole = false;
+        }
+    }
     // shading inside volumes multiplies by the intensity: black drawn over with alpha 1 - intensity
     sc->shad_scale = f->fpu_shad_scale;
     static const float corners[4][2] = { { -1, 1 }, { -1, -1 }, { 1, 1 }, { 1, -1 } };
@@ -1069,6 +1100,8 @@ static void commit(const Scene *sc)
     strip_idx_owner = sc->idx_owner;
     strip_idx_count = sc->idx_count;
     memcpy(modvols, sc->modvols, sc->modvol_count * sizeof(WiiuModVol));
+    if (wiiu_mv_bbox || wiiu_mv_bbox_check)
+        memcpy(mv_box, sc->mv_box, sc->modvol_count * sizeof(mv_box[0]));
     modvol_count = sc->modvol_count;
     mv_base = sc->mv_base;
     quad_base = sc->quad_base;
@@ -1142,7 +1175,14 @@ static void stencil_pass(GX2CompareFunction func, GX2StencilFunction op, u8 test
 // are in front of the scene, so it ends up set where an odd number of surfaces is in front: inside a closed
 // volume. A header with mode 1 (inside) or 2 (outside) closes the volume: bit 0x02 collects the pixels it
 // covers and 0x01 is cleared. Pixels with 0x02 whose polygon takes shadows (0x80) are then darkened.
-static void draw_modvols()
+#ifdef WIIU_INSTRUMENT
+static inline void scene_scissor(u32 x, u32 y, u32 w, u32 h);
+// the volumes' boxes go through the bottleneck knob's scissor too (knob=1: 1x1)
+static inline void box_scissor(u32 x, u32 y, u32 w, u32 h) { scene_scissor(x, y, w, h); }
+#else
+static inline void box_scissor(u32 x, u32 y, u32 w, u32 h) { GX2SetScissor(x, y, w, h); }
+#endif
+static void draw_modvols(u32 width, u32 height, float tile_x, float tile_y)
 {
     if (!modvol_count || !(shad_scale & 0x100))
         return;
@@ -1174,11 +1214,42 @@ static void draw_modvols()
         if (m.mode == 1 || m.mode == 2)
         {
             GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+            // mv_bbox: bit 0x01 can only be set inside the box of this volume's triangles, so the clear, and the
+            // inside resolve, need only cover it (canvas pixels to target pixels, a pixel of margin). Outside
+            // volumes still resolve over the whole target: everything beyond the box is outside too
+            u32 bx = 0, by = 0, bw = width, bh = height;
+            const float *b = mv_box[i];
+            const bool boxed = wiiu_mv_bbox && b[0] > -1e29f;
+            if (boxed)
+            {
+                const float sx = tile_x / 32.0f, sy = tile_y / 32.0f;
+                const float fx0 = b[0] * sx - 1.0f, fy0 = b[1] * sy - 1.0f, fx1 = b[2] * sx + 2.0f, fy1 = b[3] * sy + 2.0f;
+                const u32 x0 = fx0 <= 0.0f ? 0 : fx0 >= width ? width : (u32)fx0;
+                const u32 y0 = fy0 <= 0.0f ? 0 : fy0 >= height ? height : (u32)fy0;
+                const u32 x1 = fx1 <= 0.0f ? 0 : fx1 >= width ? width : (u32)fx1;
+                const u32 y1 = fy1 <= 0.0f ? 0 : fy1 >= height ? height : (u32)fy1;
+                bx = x0; by = y0;
+                bw = x1 > x0 ? x1 - x0 : 0;
+                bh = y1 > y0 ? y1 - y0 : 0;
+            }
+            const bool empty = boxed && (!bw || !bh);   // nothing of it on the target: no bit 0x01 to resolve or clear
             // inside: where 0x01 is set; outside: where it is clear. The reference doubles as the value written
-            stencil_pass(GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, 0x01, 0x02, m.mode == 1 ? 0x03 : 0x02);
-            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, quad_base, 1);
-            stencil_pass(GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, 0xFF, 0x01, 0x00);
-            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, quad_base, 1);
+            if (!(empty && m.mode == 1))
+            {
+                if (boxed && m.mode == 1)
+                    box_scissor(bx, by, bw, bh);
+                stencil_pass(GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, 0x01, 0x02, m.mode == 1 ? 0x03 : 0x02);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, quad_base, 1);
+            }
+            if (!empty)
+            {
+                if (boxed)
+                    box_scissor(bx, by, bw, bh);
+                stencil_pass(GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, 0xFF, 0x01, 0x00);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, quad_base, 1);
+            }
+            if (boxed)
+                box_scissor(0, 0, width, height);
         }
     }
     GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
@@ -1255,7 +1326,7 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
         {
             GX2SetScissor(0, 0, width, height);   // the volume passes cover the whole target
             last_clip = 0;
-            draw_modvols();
+            draw_modvols(width, height, tile_x, tile_y);
         }
         // consecutive strips mostly share state: only send what changed (keys reset per pass, as the volume
         // passes above change state behind them)
@@ -1692,6 +1763,8 @@ static void perf_report()
 volatile const char *wiiu_gx2_stage = "init";
 volatile u32 wiiu_gx2_frames_done;
 
+static void mv_bbox_check();
+
 // draw the newest 3D frame, or the scanned-out framebuffer when there has been no 3D for a second; waits for VSync
 void wiiu_gx2_frame()
 {
@@ -1741,6 +1814,7 @@ void wiiu_gx2_frame()
             commit(&scenes[geo_cur]);
             draw_scene(&rt_color, &rt_depth, RT_W, RT_H, &geo_buf[geo_cur], &idx_buf[geo_cur], 32.0f * RT_W / canvas_w,
                        32.0f * RT_H / canvas_h);
+            mv_bbox_check();
         }
         scene_dirty = false;
     }
@@ -1766,6 +1840,59 @@ void wiiu_gx2_frame()
     perf.finish += OSGetSystemTime() - t1;
     wiiu_gx2_stage = "main loop";
     wiiu_gx2_frames_done++;
+}
+
+// mv_bbox_check=1: the current scene rendered twice into the linear target, modifier volume quads full screen and
+// bounded, and the pixels compared, at the Dreamcast canvas size (1:1). mv_bbox_check=2: at the 3D render target's
+// size and scale (e.g. 960x720 from 640x480, where the boxes' rounding matters). Only frames whose volumes shade (else
+// both draws are the same by construction)
+static void mv_bbox_check()
+{
+#ifdef WIIU_INSTRUMENT
+    static u32 n, frames, bad;
+    if (!wiiu_mv_bbox_check || !modvol_count || !(shad_scale & 0x100) || ++n % 30)
+        return;
+    const bool full = wiiu_mv_bbox_check == 2 && RT_W <= RTT_MAX && RT_H <= RTT_MAX;
+    const u32 w = full ? RT_W : canvas_w < RTT_MAX ? (u32)canvas_w : RTT_MAX;
+    const u32 h = full ? RT_H : canvas_h < RTT_MAX ? (u32)canvas_h : RTT_MAX;
+    const float tx = full ? 32.0f * RT_W / canvas_w : 32.0f, ty = full ? 32.0f * RT_H / canvas_h : 32.0f;
+    static std::vector<u32> a;
+    const int saved = wiiu_mv_bbox;
+    u32 diff = 0, fx = 0, fy = 0, va = 0, vb = 0, shaded = 0;
+    for (int pass = 0; pass < 2; pass++)
+    {
+        wiiu_mv_bbox = pass;
+        draw_scene(&rtt_color, &rtt_depth, w, h, &geo_buf[geo_cur], &idx_buf[geo_cur], tx, ty);
+        GX2DrawDone();
+        DCInvalidateRange(rtt_color.surface.image, rtt_color.surface.imageSize);
+        const u32 *px = (const u32 *)rtt_color.surface.image, pitch = rtt_color.surface.pitch;
+        if (pass == 0)
+        {
+            a.resize(w * h);
+            for (u32 y = 0; y < h; y++)
+                memcpy(&a[y * w], &px[y * pitch], w * 4);
+        }
+        else
+            for (u32 y = 0; y < h; y++)
+                for (u32 x = 0; x < w; x++)
+                    if (px[y * pitch + x] != a[y * w + x] && diff++ == 0)
+                    {
+                        fx = x;
+                        fy = y;
+                        va = a[y * w + x];
+                        vb = px[y * pitch + x];
+                    }
+    }
+    wiiu_mv_bbox = saved;
+    for (u32 i = 0; i < modvol_count; i++)
+        shaded += modvols[i].mode == 1 || modvols[i].mode == 2;
+    frames++;
+    bad += diff != 0;
+    printf("[mv-check] frame %u (%ux%u, %u closed volumes): %u pixels differ; %u of %u checked frames differ%s",
+           drawn_frame_seq, w, h, shaded, diff, bad, frames, diff ? "" : "\n");
+    if (diff)
+        printf("; first at %u,%u: %08x full, %08x bounded\n", fx, fy, va, vb);
+#endif
 }
 
 extern bool wiiu_gfx_down;   // main_wiiu.cpp

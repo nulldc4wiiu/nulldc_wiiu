@@ -169,6 +169,7 @@ extern "C" int g_bcache_preset, g_jit_align_preset, g_jit_sbp_preset;
 extern "C" int g_gdrom_delay;   // presets_generated.cpp: GD-DMA pacing in KB/s (dc/gdrom/gdromv3.cpp), the options page's Disc speed
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_sq_fast, g_exp_aica_thread;
+extern int wiiu_mv_bbox, wiiu_mv_bbox_check;   // present_gx2.cpp
 extern int wiiu_exp_tr_depth;   // present_gx2.cpp: auto-sorted translucent polygons with depth >= and no depth writes
 extern int wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern "C" int g_exp_ps_ftrv, g_exp_fm_x, g_exp_jit_tlive, g_exp_jit_fconst, g_exp_fipr_split;   // wii_driver.cpp
@@ -335,6 +336,12 @@ static void load_wiiu_cfg()
             snprintf(selectedFilePath, sizeof(selectedFilePath), "%s%s", value[0] == '/' || strchr(value, ':') ? "" : home, value);
         else if (!strcmp(key, "picker"))
             picker = atoi(value) != 0;
+#ifdef WIIU_INSTRUMENT
+        else if (!strcmp(key, "mv_bbox_check"))
+            wiiu_mv_bbox_check = atoi(value);   // mv_bbox on/off compared pixel for pixel (1: 1:1, 2: render-target scale)
+#endif
+        else if (!strcmp(key, "mv_bbox"))
+            wiiu_mv_bbox = atoi(value);   // modifier volume stencil quads bounded to each volume's box (present_gx2.cpp)
         else if (!strcmp(key, "tr_depth"))
             wiiu_exp_tr_depth = atoi(value);   // translucent depth as Flycast in auto-sort mode (DOA2 character select)
         // frame-rate work (console fr1/fr2): intake on cores 2 and 0
