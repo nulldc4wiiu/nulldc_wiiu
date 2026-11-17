@@ -349,6 +349,8 @@ static void load_wiiu_cfg()
             g_exp_sq_inline = atoi(value);   // J1: TA store-queue blocks written by the JIT (2: vertex starts counted inline too)
         else if (!strcmp(key, "gd_async"))
             { extern int g_exp_gd_async; g_exp_gd_async = atoi(value); }   // H1 v2: paced GD-DMA waits for the SD read-ahead (with g_gdrom_delay)
+        else if (!strcmp(key, "sq_ram"))
+            { extern int g_exp_sq_ram; g_exp_sq_ram = atoi(value); }   // J1b: store-queue blocks to RAM copied by the JIT, no C call
         else if (!strcmp(key, "fastmem"))
             fastmem = atoi(value) != 0;
         else if (!strcmp(key, "rt_width"))

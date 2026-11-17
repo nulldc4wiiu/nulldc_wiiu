@@ -2303,7 +2303,7 @@ void FASTCALL wiiu_sqw_fast(u32 dst);
 // sq_inline (J1): shop_pref writes TA store-queue blocks into the frame itself, from g_ta_fast
 // (wiiu/render_gx2.cpp, one cache line: next, end, sq_mask[2], skip, vfast, nvert, nstrip); the parse and the rest
 // stay in C. sq_inline=2 also counts a vertex start inline when vfast >= 0
-extern "C" { extern u32 g_ta_fast[8]; extern int g_exp_sq_inline; void wiiu_ta_scan(const u32 *b);
+extern "C" { extern u32 g_ta_fast[8], g_sq_ram[2]; extern int g_exp_sq_inline, g_exp_sq_ram; void wiiu_ta_scan(const u32 *b);
              void FASTCALL wiiu_sqw_cold(u32 dst); }
 enum { TAF_NEXT = 0, TAF_END = 4, TAF_MASK = 8, TAF_SKIP = 16, TAF_VFAST = 20, TAF_NVERT = 24, TAF_NSTRIP = 28 };
 #endif
@@ -2482,7 +2482,35 @@ static void FlushCold()
 		}
 #if defined(__WIIU__)
 		else if (c.kind==4)              // --- sq_inline: not TA, or the frame is full: the C path ---
+		{
+			if (g_exp_sq_ram)
+			{
+				// sq_ram (J1b): when this queue's QACR area is RAM, g_sq_ram[queue] is mem_b's base: copy the 32
+				// bytes from sq_both[dst & 0x20] to RAM + (dst & 0xFFFFE0) here, as sqw_c would, with no call
+				verify(RAM_MASK==0x00FFFFFF);
+				const u32 tab=(u32)(uintptr_t)g_sq_ram, sq=(u32)(uintptr_t)sq_both;
+				ppc_rlwinmx(ppc_r9,ppc_rarg0,29,29,29,0);			// (dst >> 3) & 4: the queue's entry
+				ppc_addis(ppc_r10,ppc_r0,(tab-(u32)(s32)(s16)tab)>>16);
+				ppc_addi(ppc_r10,ppc_r10,(u32)(s32)(s16)tab);
+				ppc_lwzx(ppc_r10,ppc_r10,ppc_r9);
+				ppc_cmpwi(ppc_r10,0);
+				ppc_label* ccall=ppc_CreateLabel();
+				ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);			// beq: not RAM (or J1b off for it): C
+				ppc_rlwinmx(ppc_r9,ppc_rarg0,0,8,26,0);			// dst & 0x00FFFFE0
+				ppc_addx(ppc_r10,ppc_r10,ppc_r9,0,0);
+				ppc_rlwinmx(ppc_r9,ppc_rarg0,0,26,26,0);			// dst & 0x20: which queue
+				ppc_addis(ppc_r8,ppc_r0,(sq-(u32)(s32)(s16)sq)>>16);
+				ppc_addi(ppc_r8,ppc_r8,(u32)(s32)(s16)sq);
+				ppc_addx(ppc_r8,ppc_r8,ppc_r9,0,0);
+				for (u32 k=0;k<4;k++)
+					ppc_lfd(ppc_f0+k,ppc_r8,k*8);
+				for (u32 k=0;k<4;k++)
+					ppc_stfd(ppc_f0+k,ppc_r10,k*8);
+				ppc_bx(c.done,0);
+				ccall->MarkLabel();
+			}
 			ppc_call(&wiiu_sqw_cold);    // rarg0 still holds dst
+		}
 		else if (c.kind==5)              // --- sq_inline: the block (already in the frame) needs parsing ---
 		{
 			ppc_ori(ppc_rarg0,ppc_r6,0);
