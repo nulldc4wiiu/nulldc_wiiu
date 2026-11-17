@@ -171,7 +171,7 @@ extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the g
 extern int g_exp_sq_fast, g_exp_aica_thread;
 extern int wiiu_exp_tr_depth;   // present_gx2.cpp: auto-sorted translucent polygons with depth >= and no depth writes
 extern int wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
-extern "C" int g_exp_ps_ftrv, g_exp_fm_x, g_exp_jit_tlive, g_exp_jit_fconst;   // wii_driver.cpp
+extern "C" int g_exp_ps_ftrv, g_exp_fm_x, g_exp_jit_tlive, g_exp_jit_fconst, g_exp_fipr_split;   // wii_driver.cpp
 extern "C" int g_exp_sq_inline;   // render_gx2.cpp (J1: the JIT's inline TA store-queue write)
 
 struct wiiu_preset { const char *name; int *value; };
@@ -341,6 +341,8 @@ static void load_wiiu_cfg()
             g_exp_jit_tlive = atoi(value);   // Review 3 K1: T kept in r31 until a delay-slot branch reads it
         else if (!strcmp(key, "jit_fconst"))
             g_exp_jit_fconst = atoi(value);   // Review 3 K2: float immediates from a constant pool, not stw+lfs
+        else if (!strcmp(key, "fipr_split"))
+            g_exp_fipr_split = atoi(value);   // P3: fipr as two product chains (shorter dependency chain)
         else if (!strcmp(key, "sq_guard"))
             { extern int g_exp_sq_guard; g_exp_sq_guard = atoi(value); }   // J2: compile-time store-queue test for pair-float stores (1, 2)
         else if (!strcmp(key, "sq_inline"))

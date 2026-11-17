@@ -110,6 +110,7 @@ extern "C" int get_bcache_preset();	// main.cpp: 0=off (default), 1=flat dispatc
 extern "C" int get_dyn_ic_preset();	// main.cpp: 0=off (default), 1=call+jump, 2=+rts
 extern "C" int get_fpu_pin_preset();	// main.cpp: 0=off (default), 1=pin fr[0..15] to f14..f29
 extern "C" int g_exp_jit_tlive, g_exp_jit_fconst;	// below: Review 3 K1, K2
+extern "C" int g_exp_fipr_split;
 extern u32 g_cnt_fipr;
 extern "C" int get_jit_align_preset();	// main.cpp: 0=off (default), 1=32-byte-align block entries
 extern "C" int get_ifb_flush_preset();	// main.cpp: 0=off (default, full bracket), 1=selective
@@ -2080,6 +2081,7 @@ extern "C" void hotblocks_reset()
 }
 
 extern "C" { int g_exp_jit_tlive = 1, g_exp_jit_fconst = 1; }   // Review 3 K1 (T in r31 until the jcond), K2 (float immediates): on (console k12c: DOA2 fights +0.8%)
+extern "C" { int g_exp_fipr_split = 1; }   // P3: fipr as two chains, pinned operands read in place; on (console r3a: DOA2 fights +2.4%)
 u32 g_cnt_tlive, g_cnt_fconst, g_cnt_fipr;   // compiled sites using them (sampler counters line)
 // jit_fconst: float immediates the JIT loads into pinned FRs, written once each, never stored to again; full: nullptr
 static u32 jit_fconst_pool[256] __attribute__((aligned(32)));
@@ -4739,6 +4741,36 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		case shop_fipr:
 			{
 				const bool dp=get_jit_fipr_preset()!=0;
+#if defined(__WIIU__)
+				if (g_exp_fipr_split && get_fpu_pin_preset())
+				{
+					// fipr_split: pinned operands read in place (no fmr copies), the last step writing the pinned
+					// result directly. rd is always an element of an operand (FR[n+3] of FVn); it is written only by
+					// the final instruction.
+					u32 a[4],b[4];
+					for (u32 i=0;i<4;i++)
+					{
+						ppc_freg ra=GetFloatReg(op->rs1._reg+i), rb=GetFloatReg(op->rs2._reg+i);
+						if (ra!=ppc_finvalid) a[i]=(u32)ra; else { ppc_lfs(ppc_f1+i,ppc_contex,ppc_fvec_ofs(op->rs1,i)); a[i]=ppc_f1+i; }
+						if (rb!=ppc_finvalid) b[i]=(u32)rb; else { ppc_lfs(ppc_f5+i,ppc_contex,ppc_fvec_ofs(op->rs2,i)); b[i]=ppc_f5+i; }
+					}
+					const ppc_freg rf=GetFloatReg(op->rd._reg);
+					const u32 out=rf!=ppc_finvalid ? (u32)rf : (u32)ppc_f0;
+					// Two chains, (a0*b0 + a2*b2) + (a1*b1 + a3*b3), in f0 and f9 (scratch; the
+					// operands are pinned FRs or f1..f8): the dependent chain is mul, madd, add instead of mul and
+					// three madds. Same precision as the serial form; the sum order differs, so with the double
+					// sum the single result can differ only where two double roundings land differently (rare)
+					if (dp) { ppc_fmulx (ppc_f0,a[0],b[0],0); ppc_fmulx (ppc_f9,a[1],b[1],0); }
+					else    { ppc_fmulsx(ppc_f0,a[0],b[0],0); ppc_fmulsx(ppc_f9,a[1],b[1],0); }
+					if (dp) { ppc_fmaddx (ppc_f0,a[2],ppc_f0,b[2],0); ppc_fmaddx (ppc_f9,a[3],ppc_f9,b[3],0); }
+					else    { ppc_fmaddsx(ppc_f0,a[2],ppc_f0,b[2],0); ppc_fmaddsx(ppc_f9,a[3],ppc_f9,b[3],0); }
+					if (dp) { ppc_faddx(ppc_f0,ppc_f0,ppc_f9,0); ppc_frspx(out,ppc_f0,0); }
+					else    ppc_faddsx(out,ppc_f0,ppc_f9,0);
+					if (rf==ppc_finvalid) ppc_stfs(ppc_f0,ppc_contex,Sh4cntx.offset(op->rd._reg));
+					g_cnt_fipr++;
+					break;
+				}
+#endif
 				ppc_fvec_load(ppc_f1,op->rs1,0);
 				ppc_fvec_load(ppc_f2,op->rs2,0);
 				if (dp) ppc_fmulx (ppc_f0,ppc_f1,ppc_f2,0);	// acc = a0*b0 (exact in double)
