@@ -2409,6 +2409,9 @@ struct ColdFrag
 // fast path is >=~8 insns, capping mem ops well under 1024.
 static ColdFrag s_cold[1024];
 static u32      s_cold_n;
+#if defined(__WIIU__)
+static void j2_cold(const ColdFrag& c);   // sq_guard (below the fastmem helpers)
+#endif
 
 static void ColdReset() { s_cold_n = 0; }
 
@@ -2483,6 +2486,8 @@ static void FlushCold()
 			ppc_ori(ppc_rarg0,ppc_r6,0);
 			ppc_call(&wiiu_ta_scan);
 		}
+		else if (c.kind==6)              // --- sq_guard: the other side of the store-queue test ---
+			j2_cold(c);
 #endif
 		else if (c.kind==3)              // --- write pair (64): WriteMem64 ---
 		{
@@ -2641,6 +2646,97 @@ static u32 s_fm_ring_n;
 // float shapes actually emitted and announces the first one, so the log says
 // plainly whether the thing under test is in the build that ran.
 static u32 s_fm_float_sites = 0;
+static void fm_note_float_site();
+#if defined(__WIIU__)
+// sq_guard (J2-1): a fastmem float store tests at compile time whether its address is the store queue
+// (E0000000-E3FFFFFF: top 6 bits 0x38), instead of faulting into a trampoline on first use and detouring there
+// forever. DOA2 fills the store queue with fmov.d (4 pair stores per 32-byte block, ~27K blocks a frame).
+//   1: store queue inline (rlwinm, cmpwi, bne, rlwinm, addis, stfs x2), other targets in a cold fragment that holds
+//      the normal fastmem shape (RAM direct; anything else still faults and patches as before)
+//   2: the normal fastmem shape inline behind a beq (+3 instructions for a RAM store), the store queue in the cold
+//      fragment (2 taken branches, no trampoline)
+//   +4: single-float stores (fmov.s) too, not only pairs
+// The EA scratch is the shape's own (rarg1 for pairs, rarg2 for scalars): free, as the data is in FPRs.
+int g_exp_sq_guard = 2;   // on: 2 (console r3a: DOA2 fights +1.1%); 0 turns it off
+u32 g_cnt_sqguard;   // compiled guards
+// s = &sq_both[a & 0x3F] minus the returned displacement (folded into the stores when it fits)
+static s32 j2_sq_ea(u32 s,u32 a,u32 extra)
+{
+	ppc_rlwinmx(s,a,0,26,31,0);
+	const u32 sq=(u32)(uintptr_t)sq_both;
+	const s32 lo=(s32)(s16)sq;
+	ppc_addis(s,s,(sq-(u32)lo)>>16);
+	if (lo+(s32)extra>32767)
+	{
+		ppc_addi(s,s,(u32)lo);
+		return 0;
+	}
+	return lo;
+}
+static void j2_sq_store(u32 fs,u32 s,s32 d,bool pair)
+{
+	ppc_stfs(fs,s,(u32)d);
+	if (pair)
+		ppc_stfs(fs+1,s,(u32)(d+4));
+}
+// the normal fastmem float shape (fault site(s) for anything but RAM, as without the guard)
+static void j2_fm_shape(u32 fs,u32 areg,bool pair)
+{
+	if (pair)
+	{
+		fm_ea(ppc_rarg1,ppc_rarg0,0,true);
+		fm_note_float_site();
+		ppc_stfs(fs,ppc_rarg1,0);
+		ppc_stfs(fs+1,ppc_rarg1,4);
+	}
+	else
+	{
+		fm_ea(ppc_rarg2,areg,0);
+		fm_note_float_site();
+		FM_ACCESS(ppc_stfsx(fs,ppc_r12,ppc_rarg2),ppc_stfs(fs,ppc_rarg2,0));
+	}
+}
+// shop_writem: emits the guarded store and its cold fragment; false = not used here (emit the plain shape)
+static bool j2_emit(u32 fs,u32 areg,bool pair)
+{
+	const int mode=g_exp_sq_guard&3;
+	if (mode!=1 && mode!=2)
+		return false;
+	if ((!pair && !(g_exp_sq_guard&4)) || s_cold_n>=1024)
+		return false;
+	const u32 s=pair?(u32)ppc_rarg1:(u32)ppc_rarg2;
+	const u32 a=pair?(u32)ppc_rarg0:areg;
+	ppc_rlwinmx(s,a,6,26,31,0);			// the address's top 6 bits
+	ppc_cmpwi(s,0x38);
+	ppc_label* cold=ppc_CreateLabel();
+	if (mode==1)
+	{
+		ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);	// bne: not the store queue
+		j2_sq_store(fs,s,j2_sq_ea(s,a,pair?4:0),pair);
+	}
+	else
+	{
+		ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);	// beq: the store queue
+		j2_fm_shape(fs,areg,pair);
+	}
+	ColdFrag& c=s_cold[s_cold_n++];
+	c.beq=cold; c.done=emit_GetCCPtr(); c.kind=6; c.sz=pair?8:4; c.rdreg=(u8)mode;
+	c.datareg=0; c.areg=(u8)a; c.fdreg=(u8)fs; c.fofs=0; c.fuct=0;
+	g_cnt_sqguard++;
+	return true;
+}
+static void j2_cold(const ColdFrag& c)
+{
+	const bool pair=c.sz==8;
+	if (c.rdreg==1)
+		j2_fm_shape(c.fdreg,c.areg,pair);
+	else
+	{
+		const u32 s=pair?(u32)ppc_rarg1:(u32)ppc_rarg2;
+		j2_sq_store(c.fdreg,s,j2_sq_ea(s,c.areg,pair?4:0),pair);
+	}
+}
+#endif
 static void fm_note_float_site()
 {
 	// Compile time, normal context: printf is OK here (never in the DSI path).
@@ -3667,6 +3763,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					{
 						// Pair: address in rarg0, data in rarg2:rarg3 =
 						// high:low. EA scratch MUST be rarg1.
+#if defined(__WIIU__)
+						if (fdirect && fs1==fs0+1 && j2_emit(fs0,ppc_rarg0,true))
+							;	// sq_guard: the store-queue test and both paths
+						else
+#endif
+						{
 						fm_ea(ppc_rarg1,ppc_rarg0,0,true);	// EA = addr & 0x1FFFFFFF
 						if (fdirect)
 						{
@@ -3681,7 +3783,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 							ppc_stw(ppc_rarg2,ppc_rarg1,0);		// fault site A
 							ppc_stw(ppc_rarg3,ppc_rarg1,4);		// fault site B
 						}
+						}
 					}
+#if defined(__WIIU__)
+					else if (fdirect && op->flags==4 && j2_emit(fs0,areg,false))
+						;	// sq_guard +4: the same for a single-float store
+#endif
 					else
 					{
 						const u32 sz=op->flags;
