@@ -48,6 +48,7 @@
 #include "blockmanager.h"
 #include "ngen.h"
 #include "decoder.h"
+#include "game_hooks.h"
 #include "plugs/drkPvr/frame_prof.h" // FRAME_PROF: jit bucket + clear count
 
 #ifndef HOST_NO_REC
@@ -325,22 +326,10 @@ static bool DoCheck(u32 pc, u32 len)
 	if (mode == 2)
 		return true;
 
-	if (mode == 3 && (pc & 0xFFFFFF) >= 0xE30000 && (pc & 0xFFFFFF) < 0xE60000)
+	if (mode == 3 && game_hook_module_cache(pc))
 		return true;
 
-	switch (pc & 0xFFFFFF)
-	{
-		// DOA2LE
-		case 0x3DAFC6:
-		case 0x3C83F8:
-		// Shenmue 2
-		case 0x348000:
-		// Shenmue
-		case 0x41860E:
-			return true;
-		default:
-			return false;
-	}
+	return game_hook_smc_known(pc);   // the games' known self-modifying addresses (game_hooks.cpp)
 }
 
 // ============================================================================
