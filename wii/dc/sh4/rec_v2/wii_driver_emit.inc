@@ -218,6 +218,11 @@ void reg_reload_all_fpu();
 // =======================
 
 extern "C" int get_jit_sbp_preset();
+#if defined(__WIIU__)
+// J3-1 (scratch/nulldc-j3-design.md): entry_cold, the entry check falls through (wii_driver_cold.inc)
+extern "C" int g_exp_entry_cold;
+static void cold_entry_update(ppc_label* blt_site,u32 pc);
+#endif
 void ngen_Begin(DecodedBlock* block,bool force_checks)
 {
 	compile_state.Reset();
@@ -346,7 +351,20 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 	}
 
 	ppc_addic(ppc_cycles,ppc_cycles,-block->cycles,1);
-	
+
+#if defined(__WIIU__)
+	if (g_exp_entry_cold)
+	{
+		// entry_cold (J3-1): a normal entry falls straight into the body; the rare out-of-cycles path (li next_pc,
+		// b loop_do_update_write) is a cold fragment after the block. ~16M block entries a second in a DOA2 fight
+		// each saved a taken branch
+		ppc_label* upd=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);	// blt: out of cycles
+		cold_entry_update(upd,block->start);
+	}
+	else
+#endif
+	{
 	ppc_label* jdst=ppc_CreateLabel();
 	ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);
 
@@ -354,6 +372,7 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 	ppc_jump(loop_do_update_write);
 
 	jdst->MarkLabel();
+	}
 
 	// IDLE_KAMUI / wait-loop rules (decoder.cpp idle_hash): AFTER the cycle
 	// check above, so this block itself still runs (before it, the block's own

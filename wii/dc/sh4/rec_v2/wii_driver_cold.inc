@@ -57,6 +57,18 @@ static void j2_cold(const ColdFrag& c);   // sq_guard (below the fastmem helpers
 
 static void ColdReset() { s_cold_n = 0; }
 
+#if defined(__WIIU__)
+extern "C" { int g_exp_entry_cold = 1; }   // J3-1 (declared in wii_driver_emit.inc); on by default
+// ngen_Begin with entry_cold: the out-of-cycles path of this block's entry check (ColdFrag kind 7, pc in fuct)
+static void cold_entry_update(ppc_label* blt_site,u32 pc)
+{
+	verify(s_cold_n < 1024);
+	ColdFrag& c=s_cold[s_cold_n++];
+	c.beq=blt_site; c.done=0; c.kind=7; c.sz=0; c.rdreg=0; c.datareg=0; c.areg=0;
+	c.fdreg=0xFF; c.fofs=0; c.fuct=(void*)(uintptr_t)pc;
+}
+#endif
+
 static void FlushCold()
 {
 	for (u32 i = 0; i < s_cold_n; i++)
@@ -158,6 +170,12 @@ static void FlushCold()
 		}
 		else if (c.kind==6)              // --- sq_guard: the other side of the store-queue test ---
 			j2_cold(c);
+		else if (c.kind==7)              // --- entry_cold: out of cycles at block entry ---
+		{
+			ppc_li(ppc_next_pc,(u32)(uintptr_t)c.fuct);   // the block's start pc
+			ppc_jump(loop_do_update_write);
+			continue;                    // no join: the update path re-dispatches
+		}
 #endif
 		else if (c.kind==3)              // --- write pair (64): WriteMem64 ---
 		{
