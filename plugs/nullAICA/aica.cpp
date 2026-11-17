@@ -354,6 +354,13 @@ static OSThread aica_thread;
 static u8 mixer_regs[0x2000] __attribute__((aligned(32)));   // the mixer's copy of the channel registers
 void aica_mixer_regs(u8 *base);       // sgc_if.cpp
 void aica_clear_live_kyonex(u32 chan);
+// Key writes (channel register 1: KYONB, KYONEX) queued for the mixer and acted on. A monitor read (LP/EG/SGC, CA)
+// made between the two sees the channel as it was before the key event: DOA2's sound driver reads a voice it has
+// just keyed on as released and silent, keys it off again, and later reuses its channel (music lost or looping on
+// the console, 2026-11-16). Such a read waits for the mixer (aica_sync_if_key_pending); other reads don't.
+static volatile u32 key_queued, key_applied;
+static volatile u32 aica_catch_up;   // a read is waiting: the mixer runs up to the emulator, whatever aica_lag_test says
+int g_aica_key_sync = 1;             // aica_key_sync=0 in wiiu.cfg: reads never wait (the old behaviour, for A/B)
 static void aica_apply_ops(u32 sample)
 {
     while (ops_r != ops_w)
@@ -370,6 +377,11 @@ static void aica_apply_ops(u32 sample)
         {
             *(u32 *)&mixer_regs[(op.chan * 0x80 + op.reg) & ~3u] = op.data;
             WriteChannelReg8(op.chan, op.reg);
+            if (op.reg == 1)
+            {
+                __asm__ volatile("sync" : : : "memory");   // the key event's channel state before the count
+                key_applied = key_applied + 1;
+            }
         }
         ops_r = ops_r + 1;
     }
@@ -385,6 +397,21 @@ static void aica_queue(u32 chan, u32 reg, u32 data = 0)
     op.data = data;
     __asm__ volatile("sync" : : : "memory");
     ops_w = ops_w + 1;
+    if (reg == 1)
+        key_queued = key_queued + 1;
+}
+// a monitor read: if key writes are still queued, wait until the mixer has acted on them (it catches up to this
+// sample, up to g_aica_ahead samples), so the read sees the channel as with mixing inline
+void aica_sync_if_key_pending()
+{
+    if (!g_aica_key_sync || !aica_started || key_queued == key_applied || OSGetCurrentThread() == &aica_thread)
+        return;
+    const u32 want = key_queued;
+    aica_catch_up = 1;
+    while ((s32)(key_applied - want) < 0)
+        OSSleepTicks(OSMicrosecondsToTicks(10));
+    aica_catch_up = 0;
+    __asm__ volatile("sync" : : : "memory");
 }
 void aica_channel_write(u32 chan, u32 reg)
 {

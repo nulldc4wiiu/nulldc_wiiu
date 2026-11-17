@@ -1260,8 +1260,15 @@ void aica_mixer_regs(u8 *base)
 // the live block's KYONEX reads back as 0 once written, as the mixer's copy is cleared when it acts on it
 void aica_clear_live_kyonex(u32 chan) { ((ChannelCommonData *)&aica_reg[chan * 0x80])->KYONEX = 0; }
 #endif
+#ifdef __WIIU__
+void aica_sync_if_key_pending();   // aica.cpp: the mixer thread acts on queued key writes before a monitor read
+#endif
 void ReadCommonReg(u32 reg, bool byte)
 {
+#ifdef __WIIU__
+    if (reg >= 0x2810 && reg <= 0x2815)
+        aica_sync_if_key_pending();
+#endif
     switch (reg)
     {
     case 0x2808: case 0x2809:
