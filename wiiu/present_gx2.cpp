@@ -291,6 +291,14 @@ static WiiuStrip strips[WIIU_MAX_STRIPS];
 // full-screen quad at quad_base for the stencil passes
 static WiiuModVol modvols[WIIU_MAX_MV_PARAMS];
 static u32 modvol_count, mv_base, quad_base, shad_scale;
+// tr_depth (DOA2's character select, 2026-11-18; on, console tr1; tr_depth=0 turns it off): auto-sorted translucent polygons
+// (pre-sort mode off, the PVR's default) are drawn with depth >= and no depth writes, as Flycast does
+// (rend/gles/gldraw.cpp SetGPState). With their own Z-write bit, a translucent quad's transparent margins wrote depth
+// and hid what came after at the same or lesser depth: DOA2's stacked mode tiles, all at one depth, kept only the
+// first one drawn, and the fighter's name lost its bottom edge to the portrait tiles' margins. Pre-sorted frames keep
+// the polygons' own depth mode and Z-write bit (Flycast does the same)
+int wiiu_exp_tr_depth = 1;
+static bool trans_autosort;
 static u32 strip_count, drawn_frame_seq, last_3d_vblank;
 // translucent strips in drawing order: as submitted when the game pre-sorts them, else far to near
 static u32 trans_order[WIIU_MAX_STRIPS], trans_count;
@@ -325,6 +333,7 @@ struct Scene
     u32 modvol_count, mv_base, quad_base, shad_scale;
     float screen[4];   // the geo shaders' u_screen for this scene
     u32 trans_order[WIIU_MAX_STRIPS], trans_count;
+    bool trans_autosort;   // the PVR sorts translucent polygons itself (pre-sort mode off)
     u16 fog_table[128];
     u32 fog_col_ram, fog_col_vert, fog_clamp_min, fog_clamp_max;
     float fog_density;
@@ -1017,7 +1026,8 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         trans_key[i] = lo;
         sc->trans_order[sc->trans_count++] = i;
     }
-    if (!(f->isp_feed_cfg & 1))
+    sc->trans_autosort = !(f->isp_feed_cfg & 1);
+    if (sc->trans_autosort)
         std::stable_sort(sc->trans_order, sc->trans_order + sc->trans_count, [](u32 a, u32 b) { return trans_key[a] < trans_key[b]; });
     lap(5);
     memcpy(sc->fog_table, f->fog_table, sizeof(sc->fog_table));
@@ -1051,6 +1061,7 @@ static void commit(const Scene *sc)
     shad_scale = sc->shad_scale;
     memcpy(trans_order, sc->trans_order, sc->trans_count * sizeof(u32));
     trans_count = sc->trans_count;
+    trans_autosort = sc->trans_autosort;
     memcpy(next_fog_table, sc->fog_table, sizeof(next_fog_table));
     fog_col_ram = sc->fog_col_ram;
     fog_col_vert = sc->fog_col_vert;
@@ -1324,13 +1335,16 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
                     GX2SetPixelSampler(last_smp = smp, sampler_loc);
                 }
             }
-            const u32 depth_key = isp.DepthMode | isp.ZWriteDis << 3 | pcw.Shadow << 4;
+            const bool tr_auto = pass == 2 && trans_autosort && wiiu_exp_tr_depth;
+            const u32 depth_key = tr_auto ? 0x100u : isp.DepthMode | isp.ZWriteDis << 3 | pcw.Shadow << 4;
             if (depth_key != last_depth)
                 flush(BRK_DEPTH);
             if (depth_key == last_depth)
                 ;
             else if (pass == WIIU_LIST_BACKGROUND)
                 GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+            else if (tr_auto)
+                GX2SetDepthOnlyControl(TRUE, FALSE, depth_func[6]);   // tr_depth: >=, no depth writes
             else if (pass == 2)
                 GX2SetDepthOnlyControl(isp.DepthMode != 7, !isp.ZWriteDis, depth_func[isp.DepthMode]);
             else
