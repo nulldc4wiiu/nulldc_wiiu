@@ -51,7 +51,7 @@ void wiiu_gx2_shutdown();
 void wiiu_audio_init();
 bool wiiu_pick_game(const char *home, char *path, size_t size);
 void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
-                               bool *code_check, int *sound_buffer_ms);
+                               bool *code_check, int *sound_buffer_ms, int *disc_kbps);
 void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *render_width, bool *keep_pitch);
 void wiiu_gx2_set_render_width(int width);   // present_gx2.cpp
 extern float wiiu_audio_min_speed;          // audio_wiiu.cpp
@@ -166,6 +166,7 @@ static int watchdog(int, const char **)
 void wiiu_audio_shutdown();
 extern "C" int g_fastmem_preset, g_dynarec_preset, g_idle_shinobi_preset, g_controller_type;
 extern "C" int g_bcache_preset, g_jit_align_preset, g_jit_sbp_preset;
+extern "C" int g_gdrom_delay;   // presets_generated.cpp: GD-DMA pacing in KB/s (dc/gdrom/gdromv3.cpp), the options page's Disc speed
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_sq_fast, g_exp_aica_thread;
 extern int wiiu_exp_tr_depth;   // present_gx2.cpp: auto-sorted translucent polygons with depth >= and no depth writes
@@ -217,6 +218,8 @@ static void stop_emulator(OSThread *thread)
     if (!emu_running)
         return;
     printf("[wiiu] stopping the emulator\n");
+    void wiiu_disc_quiesce();
+    wiiu_disc_quiesce();
     if (sh4_cpu.Stop)
         sh4_cpu.Stop();
     for (int i = 0; i < 30 && emu_running; i++)
@@ -333,6 +336,8 @@ static void load_wiiu_cfg()
             picker = atoi(value) != 0;
         else if (!strcmp(key, "tr_depth"))
             wiiu_exp_tr_depth = atoi(value);   // translucent depth as Flycast in auto-sort mode (DOA2 character select)
+        else if (!strcmp(key, "gd_async"))
+            { extern int g_exp_gd_async; g_exp_gd_async = atoi(value); }   // H1 v2: paced GD-DMA waits for the SD read-ahead (with g_gdrom_delay)
         else if (!strcmp(key, "fastmem"))
             fastmem = atoi(value) != 0;
         else if (!strcmp(key, "rt_width"))
@@ -479,8 +484,8 @@ int main(int argc, char **argv)
     // and wiiu.cfg's exp_* keys set them one by one.
     {
         bool gfx_core = true, sound_core = true, jit_fast = true, smooth = true, code_check = true;
-        int buffer = 100;
-        wiiu_picker_speed_options(home, &gfx_core, &sound_core, &jit_fast, &smooth, &code_check, &buffer);
+        int buffer = 100, disc_kbps = 7200;
+        wiiu_picker_speed_options(home, &gfx_core, &sound_core, &jit_fast, &smooth, &code_check, &buffer, &disc_kbps);
         const int other = OSGetCodegenCore() == 0 ? 2 : 1;   // 1: core 0, 2: core 2
         wiiu_exp_gx2_core = gfx_core ? other : 0;
         wiiu_exp_split_convert = gfx_core;
@@ -490,8 +495,10 @@ int main(int argc, char **argv)
         wiiu_exp_frame_queue = smooth;
         g_jit_sbp_preset = code_check ? 3 : 1;   // 3: MvC2's module cache too
         audio_buffer_ms = buffer;
+        g_gdrom_delay = disc_kbps;   // H1: the drive paced (dc/gdrom/gdromv3.cpp), 4x a real one by default
         printf("[wiiu] speed options: graphics core %d, sound core %d, faster code %d, smooth frames %d, code check %d, "
-               "sound buffer %d\n", gfx_core, sound_core, jit_fast, smooth, code_check, buffer ? buffer : 46);
+               "sound buffer %d, disc %d KB/s\n", gfx_core, sound_core, jit_fast, smooth, code_check, buffer ? buffer : 46,
+               disc_kbps);
     }
     load_wiiu_cfg();
     if (wiiu_exp_gx2_core)

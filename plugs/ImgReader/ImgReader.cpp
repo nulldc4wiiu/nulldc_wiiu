@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "common.h"
+#include "iso9660.h"   // iso_DriveReadSector: the reader with the SD chunk cache
 #include "plugs/drkPvr/frame_prof.h" // FRAME_PROF: disc bucket
 
 // ---------------------------------------------------------------------------
@@ -187,6 +188,18 @@ void FASTCALL libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 se
 
   FP_ACC(disc, _fp_disc0);
   FP_BUMP(n_disc);
+}
+
+// H1 v2 (dc/gdrom/gdromv3.cpp): whether libGDR_ReadSector would return these sectors without waiting on the card;
+// a miss queues them for the read-ahead thread. Only the GDI/ISO reader has that cache: anything else says yes.
+bool libGDR_SectorsReady(u32 StartSector, u32 SectorCount)
+{
+#ifdef __WIIU__
+	extern bool wiiu_disc_sectors_ready(u32 StartSector, u32 count);
+	if (CurrDrive && CurrDrive->ReadSector == iso_DriveReadSector)
+		return wiiu_disc_sectors_ready(StartSector, SectorCount);
+#endif
+	return true;
 }
 
 void FASTCALL libGDR_GetToc(u32* toc,u32 area)

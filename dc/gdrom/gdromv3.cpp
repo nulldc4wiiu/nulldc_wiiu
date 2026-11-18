@@ -43,6 +43,25 @@ static int gdrom_dma_schid = -1;
 extern "C" int get_gdrom_delay();
 
 static u32 s_gd_budget = 0;	// bytes the drive may still move right now
+// Flycast's small-transfer rule (getGDROMTicks): the last 10 KB of a DMA moves at the G1 bus rate, 25 MB/s, not
+// the drive rate, so short reads stay quick. A budget of its own, credited from the same cycles.
+static const u32 GD_SMALL = 10240, GD_BUS_BPS = 25000000;
+static u32 s_gd_bus_budget = 0;
+
+// H1 v2 (gd_async, on): with the drive paced (gdrom_delay), a refill whose sectors aren't in the SD read-ahead
+// cache yet doesn't read them on the emulator thread: they're queued for the reader thread and the buffer stays
+// empty, so the DMA waits in emulated time, as a real drive would, and resumes on a later tick (UpdateGDRom).
+int g_exp_gd_async = 1;
+bool libGDR_SectorsReady(u32 StartSector, u32 SectorCount);   // plugs/ImgReader/ImgReader.cpp
+#ifdef __WIIU__
+extern int wiiu_disc_ctx;   // wiiu/disc_cache_wiiu.cpp: which path a cache miss came from (0 DMA, 1 PIO, 2 CD audio)
+#define DISC_CTX(n) (wiiu_disc_ctx = (n))
+#else
+#define DISC_CTX(n) ((void)0)
+#endif
+// H2.1: a PIO read waiting for the cache, the drive BSY meanwhile; gdrom_CreditCycles retries it each tick
+static bool s_pio_pending;
+static void gd_pio_retry();
 
 static void gdrom_spinup_tick(u32 cycles);	// GDROM_SPINUP, next to gd_setdisc()
 
@@ -50,11 +69,13 @@ void gdrom_CreditCycles(u32 cycles)
 {
 	// GDROM_SPINUP: the same emulated-clock tick runs the no-disc spin-up timer.
 	gdrom_spinup_tick(cycles);
+	gd_pio_retry();
 
 	const int kbps = get_gdrom_delay();
 	if (kbps <= 0)
 	{
 		s_gd_budget = 0;
+		s_gd_bus_budget = 0;
 		return;
 	}
 
@@ -65,6 +86,10 @@ void gdrom_CreditCycles(u32 cycles)
 	// preset exists to stop. One legacy chunk is as far ahead as it may get.
 	if (s_gd_budget > 32000u)
 		s_gd_budget = 32000u;
+
+	s_gd_bus_budget += (u32)(((u64)cycles * GD_BUS_BPS) / (u64)SH4_CLOCK_EFF);
+	if (s_gd_bus_budget > GD_SMALL)
+		s_gd_bus_budget = GD_SMALL;
 }
 
 // Small DMA-finish latency (SH4 cycles). Only needs to be >0 so the completion
@@ -266,6 +291,7 @@ void FASTCALL gdrom_get_cdda(s16* sector)
 	//silence ! :p
 	if (cdda.playing)
 	{
+		DISC_CTX(2);
 		libGDR_ReadSector((u8*)sector,cdda.CurrAddr.FAD,1,2352);
 		cdda.CurrAddr.FAD++;
 		// CDDA_STATE_FIX (Flycast libCore_CDDA_Sector): end on >=, so a play whose
@@ -303,18 +329,29 @@ void FASTCALL gdrom_get_cdda(s16* sector)
 void gd_spi_pio_end(u8* buffer,u32 len,gd_states next_state=gds_pio_end);
 void gd_process_spi_cmd();
 void gd_process_ata_cmd();
-void FillReadBuffer()
+
+// false: deferred (H1 v2), nothing read and the buffer left empty
+bool FillReadBuffer()
 {
 	read_buff.cache_index=0;
 	u32 count = read_params.remaining_sectors;
 	if (count>32)
 		count=32;
 
+	if (g_exp_gd_async && get_gdrom_delay() > 0 && count &&
+	    !libGDR_SectorsReady(read_params.start_sector, count))
+	{
+		read_buff.cache_size=0;
+		return false;
+	}
+
 	read_buff.cache_size=count*read_params.sector_type;
 
+	DISC_CTX(0);
 	libGDR_ReadSector(read_buff.cache,read_params.start_sector,count,read_params.sector_type);
 	read_params.start_sector+=count;
 	read_params.remaining_sectors-=count;
+	return true;
 }
 
 void gd_set_state(gd_states state)
@@ -397,6 +434,16 @@ void gd_set_state(gd_states state)
 					sector_count=27;
 					next_state=gds_readsector_pio;
 				}
+				// H2.1: not in the read-ahead cache yet: stay BSY (the drive is seeking) and retry from the
+				// paced tick, instead of the emulator thread waiting on the card
+				s_pio_pending = false;
+				if (g_exp_gd_async && get_gdrom_delay() > 0 &&
+				    !libGDR_SectorsReady(read_params.start_sector, sector_count))
+				{
+					s_pio_pending = true;
+					break;
+				}
+				DISC_CTX(1);
 				libGDR_ReadSector((u8*)&pio_buff.data[0],read_params.start_sector,sector_count,
 											read_params.sector_type);
 				read_params.start_sector+=sector_count;
@@ -1468,6 +1515,21 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 }
 
 //is this needed ?
+// H2.1: the deferred PIO read, once its sectors are cached (each paced tick, gdrom_CreditCycles)
+static void gd_pio_retry()
+{
+	if (!s_pio_pending)
+		return;
+	if (gd_state != gds_readsector_pio)
+	{
+		s_pio_pending = false;   // the command was replaced or reset meanwhile
+		return;
+	}
+	const u32 n = read_params.remaining_sectors > 27 ? 27 : read_params.remaining_sectors;
+	if (libGDR_SectorsReady(read_params.start_sector, n))
+		gd_set_state(gds_readsector_pio);
+}
+
 void UpdateGDRom()
 {
 	if(!(SB_GDST&1) || !(SB_GDEN &1))
@@ -1497,9 +1559,10 @@ void UpdateGDRom()
 	// Only when there is something left to move -- a zero-length call still has
 	// to fall through to the completion checks at the bottom.
 	u32 chunk = 32000;
+	const bool gd_small = len <= GD_SMALL;	// the DMA's last 10 KB: bus rate
 	if (get_gdrom_delay() > 0 && len != 0)
 	{
-		chunk = s_gd_budget & ~31u;	// keep the 32-byte alignment checked below
+		chunk = (gd_small ? s_gd_bus_budget : s_gd_budget) & ~31u;	// keep the 32-byte alignment checked below
 		if (chunk == 0)
 			return;					// no credit yet; resume on the next SlowUpdate
 		if (chunk > 32000)
@@ -1538,8 +1601,9 @@ void UpdateGDRom()
 				if (read_params.remaining_sectors==0)
 					break;
 
-				//buffer is empty , fill it :)
-				FillReadBuffer();
+				//buffer is empty , fill it :) -- or not yet (H1 v2): stop, the drive is still reading
+				if (!FillReadBuffer())
+					break;
 
 				// Re-read it: FillReadBuffer() just changed both halves of this
 				// subtraction, and the stale 0 would waste an iteration.
@@ -1583,7 +1647,8 @@ void UpdateGDRom()
 	// requested length in that case would silently skip a hole in the data.
 	const u32 moved = len_backup - len;
 
-	s_gd_budget = (s_gd_budget > moved) ? (s_gd_budget - moved) : 0;
+	u32 &spent = gd_small ? s_gd_bus_budget : s_gd_budget;
+	spent = (spent > moved) ? (spent - moved) : 0;
 
 	SB_GDLEND+= moved;
 	SB_GDSTARD+= moved;//(src + len_backup)&0x1FFFFFFF;

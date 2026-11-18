@@ -207,6 +207,7 @@ void draw(u32 *px)
 const char *const on_off[] = { "on", "off" }, *const off_on[] = { "off", "on" };
 const char *const sizes[] = { "960x720", "640x480" }, *const slow_sound[] = { "slows down", "keeps pitch" };
 const char *const sound_buf[] = { "100 ms", "46 ms" };
+const char *const disc_speed[] = { "4x drive", "real drive", "instant" };
 const picker_option options[] = {
     { "fastmem", "Fast memory",
       "Dreamcast memory mapped straight into the Wii U's: about 12% faster in 3D games. Turn it off if a game "
@@ -239,6 +240,10 @@ const picker_option options[] = {
     { "sound_buf", "Sound buffer",
       "100 ms means fewer gaps when a game slows down; 46 ms means less delay between picture and sound. Next start.",
       sound_buf, 2, 0 },
+    { "disc_speed", "Disc speed",
+      "How fast the emulated disc drive reads. 4x drive: loads take a quarter of a real Dreamcast's time, without "
+      "the pauses. Real drive: as on a Dreamcast. Instant: shortest loads, but the game freezes for a moment as it "
+      "loads. Next start.", disc_speed, 3, 0 },
 };
 int options_count() { return (int)(sizeof(options) / sizeof(options[0])); }
 const char *option_label(int i) { return options[i].label; }
@@ -309,7 +314,7 @@ void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *r
 
 // the speed settings, read at startup (before the threads exist), from the same config.txt
 void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
-                               bool *code_check, int *sound_buffer_ms)
+                               bool *code_check, int *sound_buffer_ms, int *disc_kbps)
 {
     setup(home);
     *gfx_core = picker_core_option(4) == 0;
@@ -318,6 +323,9 @@ void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_cor
     *smooth = picker_core_option(7) == 0;
     *code_check = picker_core_option(8) == 0;
     *sound_buffer_ms = picker_core_option(9) == 0 ? 100 : 0;
+    static const int kbps[] = { 7200, 1800, 0 };   // gdrom_delay, KB/s: 1800 is a real drive, 0 the old instant reads
+    const int d = picker_core_option(10);
+    *disc_kbps = kbps[d >= 0 && d < 3 ? d : 0];
 }
 
 // home: the data folder (ends in '/'), its config.txt and, by default, the content folder. path: the chosen file,

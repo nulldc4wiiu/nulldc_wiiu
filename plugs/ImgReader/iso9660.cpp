@@ -85,6 +85,22 @@ void iso_ReadSSect(u8* p_out,u32 sector,u32 secsz)
 void wiiu_disc_cache_track(int track, const char *path, u32 ss, s32 offset);
 bool wiiu_disc_read(int track, u32 index, u8 *out, FILE *f);
 
+bool wiiu_disc_ready(int track, u32 index, u32 count);
+
+// H1 v2: whether a GD-ROM read of count sectors from StartSector (as iso_DriveReadSector gets it) is in the chunk
+// cache; if not, the missing chunks are queued. Tracks the cache doesn't hold say yes (they read as before).
+bool wiiu_disc_sectors_ready(u32 StartSector, u32 count)
+{
+	if (StartSector > 150)
+		StartSector -= 150;
+	s32 i = (s32)iso_tc - 1;
+	while (i >= 0 && iso_tracks[i].FAD > StartSector)
+		i--;
+	if (i < 0 || !iso_tracks[i].f || !iso_tracks[i].SectorSize)
+		return true;
+	return wiiu_disc_ready(i, StartSector - iso_tracks[i].FAD, count);
+}
+
 static void wiiu_read_sector(u8 *buff, u32 sector, u32 secsz)
 {
 	// the track as iso_ReadSSect picks it: the last one starting at or before the sector

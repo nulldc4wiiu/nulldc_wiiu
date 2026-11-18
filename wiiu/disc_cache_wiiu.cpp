@@ -13,6 +13,9 @@
 #include "types.h"
 
 
+volatile int wiiu_disc_reader_state;   // exit-hang diagnosis: 0 waiting for work, 1 opening a track, 2 reading
+int wiiu_disc_ctx;   // who is reading (dc/gdrom/gdromv3.cpp sets it): 0 DMA, 1 PIO, 2 CD audio; for the miss counts
+
 namespace
 {
 const u32 CHUNK = 64, SLOTS = 32, MAX_SS = 2352, MAX_TRACKS = 101, QUEUE = 16;
@@ -50,7 +53,7 @@ u32 q_head, q_tail;
 OSEvent wake;
 OSThread reader;
 
-u32 stat_hits, stat_misses, stat_waits, stat_prefetched;
+u32 stat_hits, stat_misses, stat_waits, stat_prefetched, stat_async, stat_async_timeouts, stat_miss_by[3];
 
 int find(int track, u32 chunk)
 {
@@ -79,6 +82,8 @@ int claim(int track, u32 chunk)
         slots[best].track = track;
         slots[best].chunk = chunk;
         slots[best].sectors = 0;
+        slots[best].used = ++use_clock;   // new, so newest: it kept its old occupant's stamp, and read-ahead evicted
+                                          // the chunks it had just loaded before the game reached them
         slots[best].state = LOADING;
     }
     return best;
@@ -96,9 +101,11 @@ void load(Slot &s, FILE *f)
     s.state = READY;
 }
 
+volatile bool stopping;   // wiiu_disc_quiesce: the emulator is stopping, no more read-ahead
+
 void request(int track, u32 chunk)
 {
-    if (find(track, chunk) >= 0)
+    if (stopping || find(track, chunk) >= 0)
         return;
     for (u32 i = q_head; i != q_tail; i = (i + 1) % QUEUE)
         if (queue[i].track == track && queue[i].chunk == chunk)
@@ -107,6 +114,29 @@ void request(int track, u32 chunk)
         return;   // full: the reader is behind, and a miss still reads it
     queue[q_tail] = { track, chunk };
     q_tail = (q_tail + 1) % QUEUE;
+    OSSignalEvent(&wake);
+}
+
+// H2.1: a chunk the paced drive is waiting for goes to the front of the queue, ahead of read-ahead that may never
+// be used (behind up to 16 of those it waited 100-300 ms on the console, h2a). When the queue is full the newest
+// read-ahead request makes room.
+void request_now(int track, u32 chunk)
+{
+    if (stopping || find(track, chunk) >= 0)
+        return;
+    for (u32 i = q_head; i != q_tail; i = (i + 1) % QUEUE)
+        if (queue[i].track == track && queue[i].chunk == chunk)
+        {
+            const Request r = queue[i];
+            queue[i] = queue[q_head];
+            queue[q_head] = r;
+            OSSignalEvent(&wake);
+            return;
+        }
+    if ((q_tail + 1) % QUEUE == q_head)
+        q_tail = (q_tail + QUEUE - 1) % QUEUE;
+    q_head = (q_head + QUEUE - 1) % QUEUE;
+    queue[q_head] = { track, chunk };
     OSSignalEvent(&wake);
 }
 
@@ -130,9 +160,12 @@ int reader_main(int, const char **)
             if (s < 0)
                 continue;
             Track &t = tracks[r.track];
+            wiiu_disc_reader_state = 1;
             if (!t.own)
                 t.own = fopen(t.path, "rb");
+            wiiu_disc_reader_state = 2;
             load(slots[s], t.own);
+            wiiu_disc_reader_state = 0;
             stat_prefetched++;
         }
     }
@@ -210,6 +243,7 @@ bool wiiu_disc_read(int track, u32 index, u8 *out, FILE *f)
             if (s < 0)
                 return false;
             stat_misses++;
+            stat_miss_by[wiiu_disc_ctx < 3 ? wiiu_disc_ctx : 0]++;
             load(slots[s], f);
             OSFastMutex_Lock(&lock);
         }
@@ -235,12 +269,77 @@ bool wiiu_disc_read(int track, u32 index, u8 *out, FILE *f)
     }
 }
 
+// H1 v2: whether the chunks holding sectors [index, index + count) of the track are loaded, without reading:
+// missing ones are queued for the reader and the paced GD-DMA (gdromv3.cpp) waits in emulated time instead of the
+// emulator thread waiting on the SD card. After 300 ms of host time it says yes anyway, and the read takes the
+// synchronous miss path as before, so a reader that can't keep up (full queue, no free slot) never hangs a game.
+bool wiiu_disc_ready(int track, u32 index, u32 count)
+{
+    if (!ready || stopping || track < 0 || track >= (int)MAX_TRACKS || !tracks[track].ss || tracks[track].offset < 0 ||
+        !count)
+        return true;
+    static OSTime wait_since;
+    const u32 c0 = index / CHUNK, c1 = (index + count - 1) / CHUNK;
+    bool all = true;
+    OSFastMutex_Lock(&lock);
+    for (u32 c = c0; c <= c1; c++)
+    {
+        const int s = find(track, c);
+        if (s < 0)
+            request_now(track, c);
+        else
+            slots[s].used = ++use_clock;   // wanted now: keep it until the read below
+        if (s < 0 || slots[s].state != READY)
+            all = false;
+    }
+    if (all)
+        request(track, c1 + 1);   // keep the reader a chunk ahead of the drive
+    OSFastMutex_Unlock(&lock);
+    if (all)
+    {
+        wait_since = 0;
+        return true;
+    }
+    const OSTime now = OSGetSystemTime();
+    if (!wait_since)
+    {
+        wait_since = now;
+        stat_async++;
+    }
+    else if (now - wait_since > (OSTime)OSMillisecondsToTicks(300))
+    {
+        wait_since = 0;
+        stat_async_timeouts++;
+        return true;
+    }
+    return false;
+}
+
+OSThread *wiiu_disc_reader_thread() { return ready ? &reader : nullptr; }
+
+// before the emulator stops (main_wiiu.cpp stop_emulator): drop the queued read-ahead and let a read in flight finish,
+// so the exit's SD writes (settings, flash, the run summary) don't queue behind up to 16 chunks of reads
+void wiiu_disc_quiesce()
+{
+    if (!ready)
+        return;
+    stopping = true;
+    OSFastMutex_Lock(&lock);
+    q_head = q_tail = 0;
+    OSFastMutex_Unlock(&lock);
+    for (int i = 0; i < 200 && wiiu_disc_reader_state != 0; i++)
+        OSSleepTicks(OSMillisecondsToTicks(10));
+    printf("[disc] read-ahead stopped%s\n", wiiu_disc_reader_state ? ", a read still running after 2 s" : "");
+}
+
 // for the log once in a while
 void wiiu_disc_stats()
 {
     if (!ready || !stat_hits)
         return;
-    printf("[disc] sectors %u, chunk misses %u (emulator read), waits %u, prefetched %u\n", stat_hits, stat_misses,
-           stat_waits, stat_prefetched);
-    stat_hits = stat_misses = stat_waits = stat_prefetched = 0;
+    printf("[disc] sectors %u, chunk misses %u (emulator read; dma %u pio %u cdda %u), waits %u, prefetched %u, "
+           "drive waits %u (timeouts %u)\n", stat_hits, stat_misses, stat_miss_by[0], stat_miss_by[1], stat_miss_by[2],
+           stat_waits, stat_prefetched, stat_async, stat_async_timeouts);
+    stat_hits = stat_misses = stat_waits = stat_prefetched = stat_async = stat_async_timeouts = 0;
+    stat_miss_by[0] = stat_miss_by[1] = stat_miss_by[2] = 0;
 }
