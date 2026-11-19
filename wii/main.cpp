@@ -640,6 +640,15 @@ extern "C" {
   int get_aica_ca_clamp_preset() { return g_aica_ca_clamp_preset; }
 }
 
+// AICA_LPF - the per-voice low-pass filter and its filter envelope (FEG: Q, FLV0-4, FAR/FD1R/FD2R/FRR,
+// LPOFF), ported from Flycast; nullAICA had them as stubs, so every voice played unfiltered (DOA2's
+// doppelganger lines use Q=14 and sounded harsh). Console-verified (S1 battery s1b). 0=off, 1=on (default).
+int g_aica_lpf_preset = 1;
+
+extern "C" {
+  int get_aica_lpf_preset() { return g_aica_lpf_preset; }
+}
+
 // AICA_SA_FIX - sample reads for a voice whose start address (SA) is not 4-byte aligned. Sound RAM is
 // kept as host big-endian words (AICA byte A at host A^3), and the legacy reads swizzle the offset from SA
 // instead of the address, so such a voice plays the wrong bytes: DOA2's doppelganger voice lines garble,
@@ -2929,6 +2938,7 @@ void checkBiosFiles()
 #define OPT_FLASH_CHIP  141  // Page 6 (EXPERIMENTAL), under EXIT FIX
 #define OPT_FLASH_SAVE  142  // Page 6 (EXPERIMENTAL), under FLASH CHIP
 #define OPT_AICA_SA_FIX 143 // Page 4 (AUDIO), under AICA CA CLAMP
+#define OPT_AICA_LPF 144 // Page 4 (AUDIO), under AICA SA FIX
 #define OPT_EXIT_FIX    90   // shown on Page 6 (EXPERIMENTAL), first row
 #define OPT_ROW_COUNT   66
 
@@ -3036,7 +3046,8 @@ static const int OPT_PAGE3_ROWS[] = {
   OPT_ARM7_RESET_FIX,
   OPT_AICA_RACE,
   OPT_AICA_CA_CLAMP,
-  OPT_AICA_SA_FIX
+  OPT_AICA_SA_FIX,
+  OPT_AICA_LPF
 };
 
 // Page 4 - CORE
@@ -3954,6 +3965,15 @@ bool displayOptionsMenu()
       case 1: printf("[< ON (ANY ADDRESS)   >]"); break;
     }
     printf(" unaligned sample reads");
+    printf("\n");
+
+    // --- Row: AICA_LPF (sgc_if.cpp) ---
+    printf("%s AICA LPF       : ", (selectedRow == OPT_AICA_LPF) ? MENU_CURSOR : " ");
+    switch (g_aica_lpf_preset) {
+      case 0: printf("[< OFF (NO FILTER)    >]"); break;
+      case 1: printf("[< ON (FLYCAST)       >]"); break;
+    }
+    printf(" voice low-pass filter");
     printf("\n\n");
 
     printOptionsFooter();
@@ -4710,6 +4730,7 @@ bool displayOptionsMenu()
         case OPT_AICA_RACE:      g_aica_race_preset       = (g_aica_race_preset       + 1) % 2; break;
         case OPT_AICA_CA_CLAMP:  g_aica_ca_clamp_preset   = (g_aica_ca_clamp_preset   + 1) % 2; break;
         case OPT_AICA_SA_FIX: g_aica_sa_fix_preset = (g_aica_sa_fix_preset + 1) % 2; break;
+        case OPT_AICA_LPF: g_aica_lpf_preset = (g_aica_lpf_preset + 1) % 2; break;
         case OPT_TA_PROFILE:     g_ta_profile_preset      = (g_ta_profile_preset      + 1) % 2; break;
         case OPT_SH4_CLOCK:      g_sh4_clock_preset       = (g_sh4_clock_preset <= 150) ? 200 : g_sh4_clock_preset - 5; break;
         case OPT_DISC_BULK:      g_disc_bulk_preset       = (g_disc_bulk_preset       + 1) % 2; break;
@@ -4867,6 +4888,7 @@ bool displayOptionsMenu()
         case OPT_AICA_RACE:      g_aica_race_preset       = (g_aica_race_preset       + 1) % 2; break;
         case OPT_AICA_CA_CLAMP:  g_aica_ca_clamp_preset   = (g_aica_ca_clamp_preset   + 1) % 2; break;
         case OPT_AICA_SA_FIX: g_aica_sa_fix_preset = (g_aica_sa_fix_preset + 1) % 2; break;
+        case OPT_AICA_LPF: g_aica_lpf_preset = (g_aica_lpf_preset + 1) % 2; break;
         case OPT_TA_PROFILE:     g_ta_profile_preset      = (g_ta_profile_preset      + 1) % 2; break;
         case OPT_SH4_CLOCK:      g_sh4_clock_preset       = (g_sh4_clock_preset >= 200) ? 150 : g_sh4_clock_preset + 5; break;
         case OPT_DISC_BULK:      g_disc_bulk_preset       = (g_disc_bulk_preset       + 1) % 2; break;
@@ -5800,6 +5822,7 @@ int main(int argc, wchar *argv[])
     printf("AICA Race Fix  : %s\n", g_aica_race_preset ? "ON (FLYCAST)" : "OFF (LEGACY)");
     printf("AICA CA Clamp  : %s\n", g_aica_ca_clamp_preset ? "ON (LEA-3)" : "OFF (REAL HW)");
     printf("AICA SA Fix    : %s\n", g_aica_sa_fix_preset ? "ON (ANY ADDRESS)" : "OFF (LEGACY)");
+    printf("AICA LPF       : %s\n", g_aica_lpf_preset ? "ON (FLYCAST)" : "OFF (NO FILTER)");
     printf("SH4 Clock      : %dMHz%s\n", g_sh4_clock_preset,
            g_sh4_clock_preset >= 200 ? " (FULL)" : " (UNDERCLOCK)");
     printf("JIT SBP        : ");

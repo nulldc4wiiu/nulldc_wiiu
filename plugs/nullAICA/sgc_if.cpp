@@ -66,6 +66,15 @@ extern "C" int get_adpcm_loop_preset();
 extern "C" int get_aica_ca_clamp_preset();
 #define AICA_CA_CLAMP_FIX() (get_aica_ca_clamp_preset() != 0)
 extern "C" int g_aica_sa_fix_preset;   // wii/main.cpp; read directly, per sample
+extern "C" int get_aica_lpf_preset();
+#define AICA_LPF_FIX() (get_aica_lpf_preset() != 0)
+
+// FEG resonance (Q register) -> filter feedback, Flycast's qtable
+static const s32 feg_qtable[32] =
+{
+     2048,  1536,  1024,   512,     0,  -256,  -512,  -768, -1024, -1280, -1536, -1792, -2048, -2176, -2304, -2432,
+    -2560, -2688, -2816, -2944, -3072, -3136, -3200, -3264, -3328, -3392, -3456, -3520, -3584, -3648, -3712, -3776
+};
 
 // x.15
 s32  volume_lut[16];
@@ -210,7 +219,8 @@ struct ChannelCommonData
     //+28
     u32 pad_13:16;
     u32 TL:8;
-    u32 rez_28_0:3;
+    u32 rez_28_0:2;
+    u32 LPOFF:1;        // not documented (Flycast): 0 = low-pass filter on
     u32 Q:5;
     //+2C
     u32 pad_14:16;
@@ -303,7 +313,8 @@ struct ChannelCommonData
     u32 pad_12:16;
     //+28
     u32 Q:5;
-    u32 rez_28_0:3;
+    u32 LPOFF:1;
+    u32 rez_28_0:2;
     u32 TL:8;
     u32 pad_13:16;
     //+2C
@@ -426,10 +437,18 @@ struct ChannelEx
         u32 ReleaseRate;
     } AEG;
 
+    // filter envelope + per-voice low-pass filter (aica_lpf preset), ported from Flycast core/hw/aica/sgc_if.cpp
     struct
     {
-        s32        value;
+        u32        value;
+        INLINE u32  GetValue()      { return value >> AEG_STEP_BITS; }
+        INLINE void SetValue(u32 v) { value = v << AEG_STEP_BITS; }
         _EG_state  state;
+        SampleType prev1, prev2;
+        s32        fractSave;
+        s32        q;
+        u32        AttackRate, Decay1Rate, Decay2Rate, ReleaseRate;
+        bool       active;
     } FEG;
 
     struct
@@ -506,11 +525,41 @@ struct ChannelEx
         return rv;
     }
 
+    // Flycast's lowPassFilter() (a 2-pole resonant filter, cutoff from the FEG value, resonance Q), on the 16-bit
+    // sample: Flycast filters sample<<4 (20 bits); same here, then back to 16 bits for nullDC's volume stage.
+    INLINE SampleType LowPass(SampleType sample)
+    {
+        const u32 COEF_BITS = 30;
+        sample <<= 4;
+        const u32 fv   = FEG.GetValue();
+        const u32 exp  = fv >> 9;
+        const u32 mant = (fv & 0x1FF) | 0x200;
+        u64 a0 = ((u64)mant << 30) >> ((15 - exp) * 2);
+        a0 *= (mant - 1) / 8;
+        a0 >>= (47 - COEF_BITS);
+        s64 f = ((s64)mant << exp) << (COEF_BITS - 25);
+        f += (s64)FEG.q * f / 4096;
+        const s64 b1 = 128ll * 1024 * (1 << (COEF_BITS - 16)) - (f + (s64)a0);
+        const s64 b2 = 64ll * 1024 * (1 << (COEF_BITS - 16)) - f;
+        if (exp == 0)
+            FEG.fractSave = 0;   // avoid residual signal
+        const s64 mac = -(s64)a0 * sample + b1 * FEG.prev1 - b2 * FEG.prev2 - FEG.fractSave;
+        sample = (SampleType)(mac >> COEF_BITS);
+        FEG.fractSave = (s32)(((s64)sample << COEF_BITS) - mac);
+        FEG.prev2 = FEG.prev1;
+        if (sample < -512 * 1024)    sample = -512 * 1024;
+        if (sample > 512 * 1024 - 1) sample = 512 * 1024 - 1;
+        FEG.prev1 = sample;
+        return sample >> 4;
+    }
+
     INLINE void Step()
     {
         if (!enabled) return;
 
         SampleType sample = InterpolateSample();
+        if (FEG.active)
+            sample = LowPass(sample);
 
         u32 ofsatt = lfo.alfo + (AEG.GetValue() >> 2);
         ofsatt = min(ofsatt, 255u);
@@ -560,6 +609,12 @@ struct ChannelEx
     {
         StepFEG   = FEG_STEP_LUT[newstate];
         FEG.state = newstate;
+        if (newstate == EG_Attack)
+        {
+            FEG.SetValue(ccd->FLV0);
+            FEG.prev1 = FEG.prev2 = 0;
+            FEG.fractSave = 0;
+        }
     }
 
     void KEY_ON()
@@ -605,6 +660,7 @@ struct ChannelEx
         {
             key_printf("[AICA] KEY_OFF ch=%2d\n", ChanelNumber);
             SetAegState(EG_Release);
+            SetFegState(EG_Release);
         }
     }
 
@@ -711,7 +767,20 @@ struct ChannelEx
         }
         VolMix.DSPAtt = ccd->TL + SendLevel[ccd->IMXL];
     }
-    void UpdateFEG() { /* TODO */ }
+    //Q,FLV0-4,FAR,FD1R,FD2R,FRR,LPOFF (Flycast UpdateFEG; FEG rates = AEG decay rates, as in Flycast)
+    void UpdateFEG()
+    {
+        FEG.active = AICA_LPF_FIX() && ccd->LPOFF == 0
+                  && (ccd->FLV0 < 0x1ff8 || ccd->FLV1 < 0x1ff8 || ccd->FLV2 < 0x1ff8 || ccd->FLV3 < 0x1ff8
+                      || ccd->FLV4 < 0x1ff8 || ccd->Q != 4);
+        if (!FEG.active)
+            return;
+        FEG.q           = feg_qtable[ccd->Q];
+        FEG.AttackRate  = AEG_DSR_SPS[AEG_EffRate(ccd->FAR)];
+        FEG.Decay1Rate  = AEG_DSR_SPS[AEG_EffRate(ccd->FD1R)];
+        FEG.Decay2Rate  = AEG_DSR_SPS[AEG_EffRate(ccd->FD2R)];
+        FEG.ReleaseRate = AEG_DSR_SPS[AEG_EffRate(ccd->FRR)];
+    }
 
     void RegWrite(u32 offset)
     {
@@ -982,8 +1051,28 @@ void FASTCALL AegStep(ChannelEx* ch)
     }
 }
 
+// Flycast FegStep: the filter cutoff moves FLV0 -> FLV1 (attack) -> FLV2 (decay 1) -> FLV3 (decay 2), FLV4 on release
 template<u32 state>
-void FASTCALL FegStep(ChannelEx* ch) { /* stub */ }
+void FASTCALL FegStep(ChannelEx* ch)
+{
+    if (!ch->FEG.active)
+        return;
+    u32 delta, target;
+    switch (state)
+    {
+    case EG_Attack:  delta = ch->FEG.AttackRate;  target = ch->ccd->FLV1; break;
+    case EG_Decay1:  delta = ch->FEG.Decay1Rate;  target = ch->ccd->FLV2; break;
+    case EG_Decay2:  delta = ch->FEG.Decay2Rate;  target = ch->ccd->FLV3; break;
+    default:         delta = ch->FEG.ReleaseRate; target = ch->ccd->FLV4; break;
+    }
+    target <<= AEG_STEP_BITS;
+    if (ch->FEG.value < target)
+        ch->FEG.value += min(delta, target - ch->FEG.value);
+    else if (ch->FEG.value > target)
+        ch->FEG.value -= min(delta, ch->FEG.value - target);
+    else if (state < EG_Decay2)
+        ch->SetFegState((_EG_state)(state + 1));
+}
 
 // ---------------------------------------------------------------------------
 // aica_fast preset: produces exactly the same samples as ChannelEx::Step() /
@@ -991,7 +1080,7 @@ void FASTCALL FegStep(ChannelEx* ch) { /* stub */ }
 //   * only channels whose bit is set in active_lo/hi are visited; the mask is
 //     snapshotted, which matches the per-channel `enabled` test because a
 //     channel's step can only disable ITSELF
-//   * no StepFEG call: every FegStep<> is an empty stub
+//   * StepFEG only for voices whose filter is on (aica_lpf preset)
 //   * the DSP send is computed only when the DSP runs, or when the rare
 //     envelope silence test below needs it
 //   * the AEG step is a direct call picked by AEG.state instead of the StepAEG
@@ -1003,6 +1092,8 @@ extern int g_aica_fast_preset;   // wii/main.cpp; read directly, 44,100x/s
 static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, SampleType& mr)
 {
     SampleType sample = ch->InterpolateSample();
+    if (ch->FEG.active)
+        sample = ch->LowPass(sample);
 
     u32 ofsatt = ch->lfo.alfo + (ch->AEG.GetValue() >> 2);
     ofsatt = min(ofsatt, 255u);
@@ -1047,6 +1138,8 @@ static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, S
     case EG_Decay2:  AegStep<2>(ch); break;
     case EG_Release: AegStep<3>(ch); break;
     }
+    if (ch->FEG.active)
+        ch->StepFEG(ch);
     ch->StepStream(ch);
     ch->lfo.Step(ch);
 }

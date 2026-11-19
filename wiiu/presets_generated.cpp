@@ -10,6 +10,7 @@ int g_adpcm_loop_preset = 1;
 int g_advanced_alpha_preset = 1;
 int g_aica_ca_clamp_preset = 0;
 int g_aica_fast_preset = 1;
+int g_aica_lpf_preset = 1;
 int g_aica_race_preset = 1;
 int g_aica_sa_fix_preset = 1;
 int g_aniso_preset = 0;
@@ -152,6 +153,7 @@ int get_accuracy_int_preset() { return g_accuracy_int_preset; }
 int get_adpcm_loop_preset() { return g_adpcm_loop_preset; }
 int get_advanced_alpha_preset() { return g_advanced_alpha_preset; }
 int get_aica_ca_clamp_preset() { return g_aica_ca_clamp_preset; }
+int get_aica_lpf_preset() { return g_aica_lpf_preset; }
 int get_aica_race_preset() { return g_aica_race_preset; }
 int get_aniso_preset() { return g_aniso_preset; }
 int get_arm7_batch_preset() { return g_arm7_batch_preset; }
@@ -293,6 +295,7 @@ extern const wiiu_preset wiiu_presets[] = {
     { "g_advanced_alpha_preset", &g_advanced_alpha_preset },
     { "g_aica_ca_clamp_preset", &g_aica_ca_clamp_preset },
     { "g_aica_fast_preset", &g_aica_fast_preset },
+    { "g_aica_lpf_preset", &g_aica_lpf_preset },
     { "g_aica_race_preset", &g_aica_race_preset },
     { "g_aica_sa_fix_preset", &g_aica_sa_fix_preset },
     { "g_aniso_preset", &g_aniso_preset },
