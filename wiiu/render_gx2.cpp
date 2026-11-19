@@ -28,7 +28,7 @@ u8 *vram_buffer;
 u8 *plus_tex_arena = 0;
 u32 plus_tex_arena_size = 0;
 
-static WiiuFrame frames[4];   // building, latest screen frame, render-to-texture frame, the one the GX2 thread reads
+static WiiuFrame frames[WIIU_FRAMES];
 static bool list_init_since_render;
 
 // SPG.cpp raises the render-done interrupts when these count down; games wait for them between frames
@@ -36,6 +36,7 @@ extern s32 render_end_pending_cycles, render_isp_pending_cycles, render_tsp_pend
 extern "C" int get_render_delay_preset();
 extern "C" int get_y_scaler_preset(), get_h_scaler_preset();
 static WiiuFrame *build = &frames[0];   // emulator thread: the frame collecting TA input
+static WiiuFrame *parked;               // ta_keyed: a finished list waiting for its buffer's render (ListInit)
 static WiiuFrame *dec;                  // intake thread (wiiu_ta_decode): the frame FrameDecoder writes
 // sq_inline (J1): the JIT writes TA store-queue blocks into the frame itself (shop_pref, wii_driver.cpp), from
 // this one cache line: the next free slot, the frame's end, per store queue a mask that is 0x01800000 when its QACR
@@ -391,7 +392,7 @@ static inline float param_f32(u32 a) { union { u32 u; float f; } x = { param_u32
 
 // ISP_BACKGND_T points at a triangle in parameter memory whose plane covers the whole screen behind everything:
 // extrapolate its colours and UVs to the screen corners and add it as a strip of its own, drawn first
-static void add_background()
+static void add_background(WiiuFrame *build)
 {
     build->has_bg = false;
     const u32 bgt = ISP_BACKGND_T;
@@ -501,14 +502,60 @@ void VBlank()
     wiiu_fb_capture();
     wiiu_emu_safe_point();
 }
+// ta_keyed (on): a render draws the list in the parameter buffer it renders (PARAM_BASE), not all the TA input
+// since the previous render. DOA2 double-buffers its lists and, in the doppelganger intro and the cut scene after
+// it, starts the next frame's list in the other buffer before it renders the current one. A list init for another
+// buffer than the frame being built sets that frame aside whole (parked) and starts the new list in a frame of its
+// own, so no frame holds more than one list (the first version carried the next list's start into the next frame
+// by copy, and a frame then held up to two lists: overflow at WIIU_MAX_TA_BLOCKS dropped her leg in the cut scene).
+// A render of the parked buffer publishes it while the build goes on. A render with no list init since the
+// previous one redraws a list the PVR has: the scene on screen stays. Flycast keys its TA contexts the same way
+// (ta_ctx.cpp, by TA_OL_BASE; the render finds its context from the region array).
+int wiiu_exp_ta_keyed = 1;   // console fr9: the intro and the cut scene correct, no cost; 0: as before
+u32 wiiu_ta_parks, wiiu_ta_parked_renders, wiiu_ta_redraws, wiiu_ta_dropped_lists;   // [ta] keyed line
+static inline u32 buffer_key(u32 addr) { return (addr & 0xF00000) | 1; }   // never 0, a frame without a list init
+static void frame_clear(WiiuFrame *f)
+{
+    f->n_ta = f->n_ta_ev = 0;
+    f->key = 0;
+}
+// ListInit, ta_keyed: the new list goes into a frame of its own when the build holds another buffer's list
+static void keyed_list_init(u32 key)
+{
+    if (parked && parked->key == key)
+    {
+        parked = nullptr;   // the game starts this buffer over before rendering it: the PVR overwrites it too
+        wiiu_ta_dropped_lists++;
+    }
+    if (!build->key || build->key == key)
+        return;   // the frame's first list (input before it stays: the BIOS swirl), or this buffer again
+    WiiuFrame *next = parked;   // a third buffer: the oldest waiting list goes
+    if (next)
+        wiiu_ta_dropped_lists++;
+    else if (!(next = wiiu_frame_spare(frames, build, nullptr)))
+        return;
+    build->scan_nvert = g_ta_fast.nvert;
+    build->scan_nstrip = g_ta_fast.nstrip;
+    parked = build;
+    build = next;
+    frame_clear(build);
+    build->nv = build->ns = build->n_mv_tris = build->n_mp = 0;
+    build->max_invw = 0.0f;
+    g_ta_fast.nvert = g_ta_fast.nstrip = 0;
+    ta_cursor();
+    wiiu_ta_parks++;
+}
 // the game asked the PVR to render what the TA collected: hand the frame to the GX2 thread
 void StartRender()
 {
     ta_sync();
     wiiu_renders++;
+    // ta_keyed: the parked list when this render is for its buffer, else the frame being built
+    WiiuFrame *const f = parked && parked->key == buffer_key(PARAM_BASE) ? parked : build;
+    const bool redraw = wiiu_exp_ta_keyed && f == build && !list_init_since_render && !((FB_W_SOF1 >> 24) & 1);
     // render-done timing, as gxRend.cpp schedules it for each render_delay preset
     // as the scanner counted them: the geometry itself is decoded later, on the intake thread
-    const u32 vertices = g_ta_fast.nvert, strips = g_ta_fast.nstrip;
+    const u32 vertices = f == build ? g_ta_fast.nvert : f->scan_nvert, strips = f == build ? g_ta_fast.nstrip : f->scan_nstrip;
     const int mode = get_render_delay_preset();
     if (mode == 1)
     {
@@ -533,28 +580,41 @@ void StartRender()
     {
         render_end_pending_cycles = vertices * 15 < 50000 ? 50000 : vertices * 15;
     }
-    list_init_since_render = false;
+    // the parked list went to its render: the build already holds the next list, with its list init
+    list_init_since_render = f != build;
+    if (redraw)
+    {
+        wiiu_ta_redraws++;   // nothing new for the GX2 side; the input so far stays for the next render
+        return;
+    }
     for (u32 i = 0; i < 128; i++)
-        build->fog_table[i] = FOG_TABLE[i] & 0xFFFF;
-    build->fog_col_ram = FOG_COL_RAM;
-    build->isp_feed_cfg = ISP_FEED_CFG;
-    build->fpu_shad_scale = FPU_SHAD_SCALE;
-    build->rtt = (FB_W_SOF1 >> 24) & 1;
-    build->rtt_addr = FB_W_SOF1 & VRAM_MASK;
-    build->rtt_ctrl = FB_W_CTRL;
-    build->rtt_stride = (FB_W_LINESTRIDE & 0x1FF) * 8;
-    build->rtt_w = ((FB_X_CLIP.full >> 16) & 0x7FF) + 1;
-    build->rtt_h = ((FB_Y_CLIP.full >> 16) & 0x3FF) + 1;
-    canvas(build->canvas_w, build->canvas_h);
-    add_background();   // after the canvas and window sizes it covers
-    build->fog_col_vert = FOG_COL_VERT;
-    build->fog_clamp_min = FOG_CLAMP_MIN;
-    build->fog_clamp_max = FOG_CLAMP_MAX;
+        f->fog_table[i] = FOG_TABLE[i] & 0xFFFF;
+    f->fog_col_ram = FOG_COL_RAM;
+    f->isp_feed_cfg = ISP_FEED_CFG;
+    f->fpu_shad_scale = FPU_SHAD_SCALE;
+    f->rtt = (FB_W_SOF1 >> 24) & 1;
+    f->rtt_addr = FB_W_SOF1 & VRAM_MASK;
+    f->rtt_ctrl = FB_W_CTRL;
+    f->rtt_stride = (FB_W_LINESTRIDE & 0x1FF) * 8;
+    f->rtt_w = ((FB_X_CLIP.full >> 16) & 0x7FF) + 1;
+    f->rtt_h = ((FB_Y_CLIP.full >> 16) & 0x3FF) + 1;
+    canvas(f->canvas_w, f->canvas_h);
+    add_background(f);   // after the canvas and window sizes it covers
+    f->fog_col_vert = FOG_COL_VERT;
+    f->fog_clamp_min = FOG_CLAMP_MIN;
+    f->fog_clamp_max = FOG_CLAMP_MAX;
     // 1.7 fixed-point mantissa in bits 15..8, signed power-of-two exponent in bits 7..0
-    build->fog_density = ((FOG_DENSITY >> 8) & 0xFF) / 128.0f * __builtin_ldexpf(1.0f, (s8)(FOG_DENSITY & 0xFF));
-    build->decoded = false;
-    build = wiiu_frame_publish(build, frames);
-    build->n_ta = build->n_ta_ev = 0;   // the next render's input starts here
+    f->fog_density = ((FOG_DENSITY >> 8) & 0xFF) / 128.0f * __builtin_ldexpf(1.0f, (s8)(FOG_DENSITY & 0xFF));
+    f->decoded = false;
+    if (f != build)
+    {
+        parked = nullptr;
+        wiiu_frame_publish(f, frames, build);   // the build goes on in its own frame
+        wiiu_ta_parked_renders++;
+        return;
+    }
+    build = wiiu_frame_publish(build, frames, parked);
+    frame_clear(build);   // the next render's input starts here
     g_ta_fast.nvert = g_ta_fast.nstrip = 0;
     ta_cursor();
 }
@@ -767,8 +827,16 @@ void ListInit()
     // like gxRend.cpp, a list init empties nothing: a render draws all the TA input since the previous one. The BIOS
     // intro sends its swirl after one render starts and its grey panels after the next list init, for the same
     // render; emptying here dropped the swirl. The frame is emptied when StartRender hands it over.
+    // ta_keyed: a list for another buffer goes into a frame of its own (keyed_list_init).
     scan_reset();
+    const u32 key = buffer_key(PvrReg(TA_ISP_BASE_addr, u32));
+    if (wiiu_exp_ta_keyed)
+    {
+        ta_sync();   // the frame set aside ends at the block count so far
+        keyed_list_init(key);
+    }
     ta_event(TA_EV_LIST_INIT);
+    build->key = key;
     list_init_since_render = true;
 }
 void SoftReset()

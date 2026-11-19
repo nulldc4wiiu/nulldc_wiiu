@@ -337,6 +337,8 @@ static void load_wiiu_cfg()
             picker = atoi(value) != 0;
         else if (!strcmp(key, "tr_depth"))
             wiiu_exp_tr_depth = atoi(value);   // translucent depth as Flycast in auto-sort mode (DOA2 character select)
+        else if (!strcmp(key, "ta_keyed"))
+            { extern int wiiu_exp_ta_keyed; wiiu_exp_ta_keyed = atoi(value); }   // a render draws its own buffer's list (DOA2)
         else if (!strcmp(key, "jit_tlive"))
             g_exp_jit_tlive = atoi(value);   // Review 3 K1: T kept in r31 until a delay-slot branch reads it
         else if (!strcmp(key, "jit_fconst"))

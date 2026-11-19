@@ -19,6 +19,9 @@ static const u32 WIIU_MAX_VERTICES = 65536, WIIU_MAX_STRIPS = 16384;
 static const u32 WIIU_MAX_MV_TRIS = 8192, WIIU_MAX_MV_PARAMS = 4096;
 // the TA input of a frame, kept raw (32-byte blocks) and decoded on the intake thread (render_gx2.cpp)
 static const u32 WIIU_MAX_TA_BLOCKS = 65536, WIIU_MAX_TA_EVENTS = 64;
+// building, the list waiting for its render (ta_keyed), the latest screen frame, the render-to-texture frame,
+// the one the intake thread reads
+static const u32 WIIU_FRAMES = 5;
 
 struct WiiuVertex
 {
@@ -76,6 +79,9 @@ struct WiiuFrame
     u32 n_ta;
     struct { u32 at, what; } ta_ev[WIIU_MAX_TA_EVENTS];
     u32 n_ta_ev;
+    // ta_keyed: the parameter buffer of the frame's last list init (TA_ISP_BASE & 0xF00000, | 1; 0 before
+    // one), and the scanner's vertex and strip counts when the frame was set aside (render-done timing)
+    u32 key, scan_nvert, scan_nstrip;
     bool decoded;
     // the background plane (ISP_BACKGND_T), read at StartRender and added after the decoded geometry
     WiiuVertex bg_v[4];
@@ -93,8 +99,11 @@ struct WiiuTexInval
     u32 bytes;
 };
 
-// emulator thread: publish the finished frame, get one of the four buffers to build the next one in
-// (present_gx2.cpp). A render-to-texture frame waits for the GX2 thread to take the previous one.
-WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames);
+// emulator thread: publish the finished frame, get one of the WIIU_FRAMES buffers to build the next one in
+// (present_gx2.cpp), never keep (a frame still being built). A render-to-texture frame waits for the GX2 thread
+// to take the previous one.
+WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames, const WiiuFrame *keep);
+// emulator thread: a free buffer, neither a nor b, without publishing anything; nullptr before the GX2 side is up
+WiiuFrame *wiiu_frame_spare(WiiuFrame *frames, const WiiuFrame *a, const WiiuFrame *b);
 // emulator thread, every VBlank: copy the scanned-out framebuffer for the 2D path
 void wiiu_fb_capture();

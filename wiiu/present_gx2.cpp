@@ -189,7 +189,21 @@ static volatile u32 frame_seq;
 static OSFastMutex frame_lock;
 static OSEvent intake_go;             // a screen frame was published
 
-WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames)
+WiiuFrame *wiiu_frame_spare(WiiuFrame *frames, const WiiuFrame *a, const WiiuFrame *b)
+{
+    if (!lock_ready)
+        return nullptr;
+    OSFastMutex_Lock(&frame_lock);
+    WiiuFrame *next = nullptr;
+    for (u32 i = 0; i < WIIU_FRAMES && !next; i++)
+        if (&frames[i] != pending_frame && &frames[i] != pending_rtt && &frames[i] != intake_using && &frames[i] != a &&
+            &frames[i] != b)
+            next = &frames[i];
+    OSFastMutex_Unlock(&frame_lock);
+    return next;
+}
+
+WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames, const WiiuFrame *keep)
 {
     if (!lock_ready)
         return done;
@@ -210,8 +224,8 @@ WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames)
         frame_seq = frame_seq + 1;
     }
     WiiuFrame *next = nullptr;
-    for (int i = 0; i < 4 && !next; i++)
-        if (&frames[i] != pending_frame && &frames[i] != pending_rtt && &frames[i] != intake_using)
+    for (u32 i = 0; i < WIIU_FRAMES && !next; i++)
+        if (&frames[i] != pending_frame && &frames[i] != pending_rtt && &frames[i] != intake_using && &frames[i] != keep)
             next = &frames[i];
     OSFastMutex_Unlock(&frame_lock);
     if (!done->rtt)
