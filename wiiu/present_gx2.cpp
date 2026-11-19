@@ -898,6 +898,10 @@ static void adopt_scene()
 // the frame's vertices into clip space (from w x h Dreamcast pixels) at out; convert_frame puts its strips, volumes,
 // translucent order and fog values into the scene. CPU work only; the fog table texture is the GX2 thread's
 // (apply_fog_table)
+// frame-rate work switch (main_wiiu.cpp key):
+//   conv_split2 (on): the helper also converts the modifier volume vertices (DOA2's fights: ~10,000 a frame, as
+//     many as the polygons), and the intake thread waits for it only after the strips, boxes and index lists
+int wiiu_exp_conv_split2 = 1;
 static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 to, float hw, float hh, float scale)
 {
     for (u32 i = from; i < to; i++)
@@ -919,7 +923,27 @@ static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 t
     }
 }
 int wiiu_exp_split_convert;
-static struct { const WiiuFrame *f; GpuVertex *out; u32 from, to; float hw, hh, scale; } conv_job;
+static struct { const WiiuFrame *f; GpuVertex *out; u32 from, to; float hw, hh, scale; u32 mv_base, mv_n; } conv_job;
+// modifier volume vertices [0, n) of f->mv into out[base...]: clip space, no colour or UV
+static void convert_mv(const WiiuFrame *f, GpuVertex *out, u32 base, u32 n, float hw, float hh, float scale)
+{
+    for (u32 i = 0; i < n; i++)
+    {
+        const WiiuMvVertex &v = f->mv[i];
+        float invw = v.z > 1e-7f ? v.z : 1e-7f;
+        float w = 1.0f / invw;
+        float d = invw * scale;
+        if (d > 1.0f)
+            d = 1.0f;
+        GpuVertex &o = out[base + i];
+        o.x = (v.x / hw - 1.0f) * w;
+        o.y = (1.0f - v.y / hh) * w;
+        o.z = (2.0f * d - 1.0f) * w;
+        o.w = w;
+        o.col = o.spc = 0;
+        o.u = o.v = 0.0f;
+    }
+}
 static OSEvent conv_go, conv_done;
 static bool conv_helper_up;
 static OSThread conv_thread;
@@ -929,6 +953,11 @@ static int conv_main(int, const char **)
     {
         OSWaitEvent(&conv_go);
         convert_vertices(conv_job.f, conv_job.out, conv_job.from, conv_job.to, conv_job.hw, conv_job.hh, conv_job.scale);
+        if (conv_job.mv_n)
+        {
+            convert_mv(conv_job.f, conv_job.out, conv_job.mv_base, conv_job.mv_n, conv_job.hw, conv_job.hh, conv_job.scale);
+            DCFlushRange(&conv_job.out[conv_job.mv_base], conv_job.mv_n * sizeof(GpuVertex));
+        }
         // flushed by the core that wrote them, as the intake thread does its own
         DCFlushRange(&conv_job.out[conv_job.from], (conv_job.to - conv_job.from) * sizeof(GpuVertex));
         OSSignalEvent(&conv_done);
@@ -968,35 +997,35 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     sc->screen[2] = 1.0f / hh;
     sc->screen[3] = scale;
     u32 first_half = f->nv;
-    if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
+    const u32 mv_n = f->n_mv_tris * 3;
+    sc->mv_base = f->nv;   // modifier volume triangles, then the full-screen quad, after the polygon vertices
+    // split2: the helper takes the second half of the polygons and all the volume vertices; split by work, so the
+    // intake thread's half grows by half the volume vertices (the boxes, copies and index lists come on top of it)
+    const bool split2 = wiiu_exp_conv_split2 && wiiu_exp_split_convert && conv_helper_up && f->nv + mv_n >= 2048;
+    bool helper = false;
+    if (split2)
+    {
+        first_half = (f->nv + mv_n) / 2 & ~31u;
+        if (first_half > f->nv)
+            first_half = f->nv;
+        conv_job = { f, out, first_half, f->nv, hw, hh, scale, sc->mv_base, mv_n };
+        OSSignalEvent(&conv_go);
+        helper = true;
+    }
+    else if (wiiu_exp_split_convert && f->nv >= 2048 && conv_helper_up)
     {
         first_half = f->nv / 2 & ~31u;
-        conv_job = { f, out, first_half, f->nv, hw, hh, scale };
+        conv_job = { f, out, first_half, f->nv, hw, hh, scale, 0, 0 };
         OSSignalEvent(&conv_go);
+        helper = true;
     }
     convert_vertices(f, out, 0, first_half, hw, hh, scale);
     lap(1);
-    if (first_half != f->nv)
+    if (helper && !split2)
         OSWaitEvent(&conv_done);
     lap(2);
-    // modifier volume triangles, then the full-screen quad, after the polygon vertices
-    sc->mv_base = f->nv;
-    for (u32 i = 0; i < f->n_mv_tris * 3; i++)
-    {
-        const WiiuMvVertex &v = f->mv[i];
-        float invw = v.z > 1e-7f ? v.z : 1e-7f;
-        float w = 1.0f / invw;
-        float d = invw * scale;
-        if (d > 1.0f)
-            d = 1.0f;
-        GpuVertex &o = out[sc->mv_base + i];
-        o.x = (v.x / hw - 1.0f) * w;
-        o.y = (1.0f - v.y / hh) * w;
-        o.z = (2.0f * d - 1.0f) * w;
-        o.w = w;
-        o.col = o.spc = 0;
-        o.u = o.v = 0.0f;
-    }
+    if (!split2)
+        convert_mv(f, out, sc->mv_base, mv_n, hw, hh, scale);
     sc->quad_base = sc->mv_base + f->n_mv_tris * 3;
     if (wiiu_mv_bbox || wiiu_mv_bbox_check)
     {
@@ -1075,6 +1104,13 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     if (sc->trans_autosort)
         std::stable_sort(sc->trans_order, sc->trans_order + sc->trans_count, [](u32 a, u32 b) { return trans_key[a] < trans_key[b]; });
     lap(5);
+    if (split2)
+        OSWaitEvent(&conv_done);   // the helper's polygons and volume vertices (counted in lap 2, "helper wait")
+    {
+        const OSTime w = OSGetSystemTime();
+        conv_ticks[2] += w - c0;
+        c0 = w;
+    }
     memcpy(sc->fog_table, f->fog_table, sizeof(sc->fog_table));
     sc->fog_col_ram = f->fog_col_ram;
     sc->fog_col_vert = f->fog_col_vert;

@@ -349,6 +349,8 @@ static void load_wiiu_cfg()
             { extern int wiiu_exp_depth_inline; wiiu_exp_depth_inline = atoi(value); }   // depth scale gathered per strip
         else if (!strcmp(key, "ta_dcbz"))
             { extern int wiiu_exp_ta_dcbz; wiiu_exp_ta_dcbz = atoi(value); }   // zero the decoded vertices' new cache lines
+        else if (!strcmp(key, "conv_split2"))
+            { extern int wiiu_exp_conv_split2; wiiu_exp_conv_split2 = atoi(value); }   // helper converts volumes too
         else if (!strcmp(key, "ta_keyed"))
             { extern int wiiu_exp_ta_keyed; wiiu_exp_ta_keyed = atoi(value); }   // a render draws its own buffer's list (DOA2)
         else if (!strcmp(key, "jit_tlive"))
