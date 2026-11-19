@@ -92,6 +92,8 @@ extern "C" void wiiu_sq_masks()
 
 static inline u32 rgba_bytes(u32 r, u32 g, u32 b, u32 a) { return (r << 24) | (g << 16) | (b << 8) | a; }
 static inline u32 clamp255(float f) { return f <= 0.0f ? 0 : f >= 1.0f ? 255 : (u32)(f * 255.0f); }
+// frame-rate work switch (main_wiiu.cpp key), on: depth_inline (see FrameDecoder)
+int wiiu_exp_depth_inline = 1;
 // TA packed colour is ARGB8888
 static inline u32 from_argb(u32 c) { return rgba_bytes((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); }
 static inline u32 from_float(float a, float r, float g, float b) { return rgba_bytes(clamp255(r), clamp255(g), clamp255(b), clamp255(a)); }
@@ -152,12 +154,23 @@ struct FrameDecoder
     // only polygon headers that start a group change it
     static void TileClipMode(u32 mode) { clip_mode = mode; }
     static void StartPolyStrip() { cur.first = dec->nv; }
+    // depth_inline: the depth scale's largest 1/w (wiiu_ta_decode) gathered as each strip is kept, over the same
+    // vertices the separate pass reads (strips of 3 or more), while they are still in the cache
+    static float strip_max;
+    static void strip_kept(const WiiuStrip &st)
+    {
+        for (u32 k = st.first; k < st.first + st.count && k < dec->nv; k++)
+            if (dec->v[k].z > strip_max && dec->v[k].z < 1e30f)
+                strip_max = dec->v[k].z;
+    }
     static void EndPolyStrip()
     {
         cur.count = dec->nv - cur.first;
         if (cur.count >= 3 && dec->ns < WIIU_MAX_STRIPS)
         {
             dec->s[dec->ns++] = cur;
+            if (wiiu_exp_depth_inline)
+                strip_kept(cur);
         }
         else if (cur.count >= 3)
             wiiu_dropped_strips++;
@@ -332,8 +345,11 @@ struct FrameDecoder
         }
         cur.count = 4;
         dec->s[dec->ns++] = cur;
+        if (wiiu_exp_depth_inline)
+            strip_kept(cur);
     }
 };
+float FrameDecoder::strip_max;
 
 u32 FrameDecoder::list;
 WiiuStrip FrameDecoder::cur;
@@ -861,6 +877,7 @@ void wiiu_ta_decode(WiiuFrame *f)
     dec = f;
     f->nv = f->ns = f->n_mv_tris = f->n_mp = 0;
     f->max_invw = 0.0f;
+    FrameDecoder::strip_max = 0.0f;
     TileAccel.ListInit();   // TaCmd back to the start
     u32 ev = 0;
     for (u32 i = 0; i <= f->n_ta; )
@@ -890,6 +907,9 @@ void wiiu_ta_decode(WiiuFrame *f)
     // clip-space conversion rounds them together and near surfaces flicker through each other
     {
     float m = 0.0f;
+    if (wiiu_exp_depth_inline)
+        m = FrameDecoder::strip_max;   // the same maximum, gathered as the strips were kept
+    else
     for (u32 i = 0; i < f->ns; i++)
         if (f->s[i].count >= 3)
             for (u32 k = f->s[i].first; k < f->s[i].first + f->s[i].count && k < f->nv; k++)

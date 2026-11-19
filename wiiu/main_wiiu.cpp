@@ -337,6 +337,9 @@ static void load_wiiu_cfg()
             picker = atoi(value) != 0;
         else if (!strcmp(key, "tr_depth"))
             wiiu_exp_tr_depth = atoi(value);   // translucent depth as Flycast in auto-sort mode (DOA2 character select)
+        // frame-rate work (console fr1/fr2): intake on cores 2 and 0
+        else if (!strcmp(key, "depth_inline"))
+            { extern int wiiu_exp_depth_inline; wiiu_exp_depth_inline = atoi(value); }   // depth scale gathered per strip
         else if (!strcmp(key, "ta_keyed"))
             { extern int wiiu_exp_ta_keyed; wiiu_exp_ta_keyed = atoi(value); }   // a render draws its own buffer's list (DOA2)
         else if (!strcmp(key, "jit_tlive"))
