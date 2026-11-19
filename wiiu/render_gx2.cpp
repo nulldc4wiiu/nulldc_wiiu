@@ -92,8 +92,8 @@ extern "C" void wiiu_sq_masks()
 
 static inline u32 rgba_bytes(u32 r, u32 g, u32 b, u32 a) { return (r << 24) | (g << 16) | (b << 8) | a; }
 static inline u32 clamp255(float f) { return f <= 0.0f ? 0 : f >= 1.0f ? 255 : (u32)(f * 255.0f); }
-// frame-rate work switch (main_wiiu.cpp key), on: depth_inline (see FrameDecoder)
-int wiiu_exp_depth_inline = 1;
+// frame-rate work switches (main_wiiu.cpp keys), on: depth_inline, ta_dcbz (see FrameDecoder)
+int wiiu_exp_depth_inline = 1, wiiu_exp_ta_dcbz = 1;
 // TA packed colour is ARGB8888
 static inline u32 from_argb(u32 c) { return rgba_bytes((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); }
 static inline u32 from_float(float a, float r, float g, float b) { return rgba_bytes(clamp255(r), clamp255(g), clamp255(b), clamp255(a)); }
@@ -120,6 +120,15 @@ struct FrameDecoder
             return nullptr;
         }
         WiiuVertex *v = &dec->v[dec->nv++];
+        static_assert(sizeof(WiiuVertex) == 28, "ta_dcbz's line test");
+        if (wiiu_exp_ta_dcbz && dec->nv + 2 < WIIU_MAX_VERTICES)
+        {
+            // ta_dcbz: a vertex that starts a cache line, or runs into the next one, gets that line zeroed rather
+            // than read from memory first; the rest of the line is the next vertex's (never past the array: nv + 2)
+            const uintptr_t a = (uintptr_t)v;
+            if ((a + 27) >> 5 != (a - 1) >> 5)
+                __asm__ volatile("dcbz 0,%0" : : "r"(a + 27) : "memory");
+        }
         v->x = xyz[0];
         v->y = xyz[1];
         v->z = xyz[2];

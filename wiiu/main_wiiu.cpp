@@ -340,6 +340,8 @@ static void load_wiiu_cfg()
         // frame-rate work (console fr1/fr2): intake on cores 2 and 0
         else if (!strcmp(key, "depth_inline"))
             { extern int wiiu_exp_depth_inline; wiiu_exp_depth_inline = atoi(value); }   // depth scale gathered per strip
+        else if (!strcmp(key, "ta_dcbz"))
+            { extern int wiiu_exp_ta_dcbz; wiiu_exp_ta_dcbz = atoi(value); }   // zero the decoded vertices' new cache lines
         else if (!strcmp(key, "ta_keyed"))
             { extern int wiiu_exp_ta_keyed; wiiu_exp_ta_keyed = atoi(value); }   // a render draws its own buffer's list (DOA2)
         else if (!strcmp(key, "jit_tlive"))
