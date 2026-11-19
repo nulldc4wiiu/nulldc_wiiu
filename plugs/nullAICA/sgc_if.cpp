@@ -65,6 +65,7 @@ extern "C" int get_adpcm_loop_preset();
 // CA register read in ReadCommonReg(). Called only on a CA read.
 extern "C" int get_aica_ca_clamp_preset();
 #define AICA_CA_CLAMP_FIX() (get_aica_ca_clamp_preset() != 0)
+extern "C" int g_aica_sa_fix_preset;   // wii/main.cpp; read directly, per sample
 
 // x.15
 s32  volume_lut[16];
@@ -364,6 +365,7 @@ struct ChannelEx
     ChannelCommonData* ccd;
 
     u8*        SA;
+    u32        SA_addr;   // SA as a sound RAM address (AICA_SA_FIX reads)
     u32        CA;
     fp_22_10   step;
     u32        update_rate;
@@ -618,6 +620,7 @@ struct ChannelEx
         u32 addr = (ccd->SA_hi << 16) | ccd->SA_low;
         if (ccd->PCMS == 0) addr &= ~1;
         SA = &aica_ram_l[addr];
+        SA_addr = addr;
     }
     void UpdateLoop()
     {
@@ -785,18 +788,44 @@ INLINE void FASTCALL StepDecodeSample(ChannelEx* ch, u32 CA)
         s0 = ch->noise_state; s0 >>= 16;
         s1 = ch->noise_state * 16807 + 0xbeef; s1 >>= 16;
         break;
+    // AICA_SA_FIX: sound RAM is host big-endian u32 words (AICA byte A at host A^3, halfword at A^2), so the swizzle
+    // belongs on the absolute address. The legacy reads apply it to the offset from SA, which is only right for a
+    // 4-byte-aligned SA: a sample starting at SA&3 != 0 reads the wrong bytes.
     case 0:
+        if (g_aica_sa_fix_preset)
+        {
+            const u32 a = ch->SA_addr + CA * 2;
+            s0 = *(s16*)&aica_ram_l[(a ^ 2) & ARAM_MASK];
+            s1 = *(s16*)&aica_ram_l[((a + 2) ^ 2) & ARAM_MASK];
+            break;
+        }
         s0 = sptr16[(CA + 0) ^ 1];
         s1 = sptr16[(CA + 1) ^ 1];
         break;
     case 1:
+        if (g_aica_sa_fix_preset)
+        {
+            const u32 a = ch->SA_addr + CA;
+            s0 = (s8)aica_ram_l[(a ^ 3) & ARAM_MASK] << 8;
+            s1 = (s8)aica_ram_l[((a + 1) ^ 3) & ARAM_MASK] << 8;
+            break;
+        }
         s0 = sptr8[(CA + 0) ^ 3] << 8;
         s1 = sptr8[(CA + 1) ^ 3] << 8;
         break;
     case 2: case 3:
         {
-            u8 ad1 = uptr8[(CA >> 1) ^ 3];
-            u8 ad2 = uptr8[((CA + 1) >> 1) ^ 3];
+            u8 ad1, ad2;
+            if (g_aica_sa_fix_preset)
+            {
+                ad1 = aica_ram_l[((ch->SA_addr + (CA >> 1)) ^ 3) & ARAM_MASK];
+                ad2 = aica_ram_l[((ch->SA_addr + ((CA + 1) >> 1)) ^ 3) & ARAM_MASK];
+            }
+            else
+            {
+                ad1 = uptr8[(CA >> 1) ^ 3];
+                ad2 = uptr8[((CA + 1) >> 1) ^ 3];
+            }
             u8 sf  = (CA & 1) << 2;
             ad1 >>= sf;
             ad2 >>= 4 - sf;

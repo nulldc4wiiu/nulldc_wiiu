@@ -168,6 +168,10 @@
                                 samples of the loop end (Flycast 788cbfb64, for
                                 some Visual Concepts sports games). Real
                                 hardware does not do this; set it per game.
+        aica_sa_fix=on      <- on/off (default on): PCM/ADPCM sample reads
+                                at a start address that is not 4-byte aligned
+                                read the right bytes. off = legacy (garbled
+                                voices in DOA2, distorted MvC2).
         arm7_jit=2          <- 0..5 (off/on = 0/1), ARM7 sound-CPU recompiler
                                 (see plugs/vbaARM/arm7_jit.cpp). 0 runs the
                                 cached interpreter; 1 translates ARM code to
@@ -1382,6 +1386,7 @@ extern int g_arm7_str_align_preset;
 extern int g_arm7_reset_fix_preset;
 extern int g_aica_race_preset;
 extern int g_aica_ca_clamp_preset;
+extern "C" int g_aica_sa_fix_preset;
 extern int g_sh4_clock_preset;
 extern int g_jit_sbp_preset;
 extern int g_jit_ici_preset;
@@ -1549,6 +1554,7 @@ struct GamePreset
     int arm7_reset_fix;
     int aica_race;
     int aica_ca_clamp;
+    int aica_sa_fix;
     int sh4_clock;
     int jit_sbp;
     int jit_ici;
@@ -2114,6 +2120,7 @@ static void apply_kv(GamePreset* p, const char* key, const char* val)
     else if (key_eq(key, "arm7_reset_fix")) p->arm7_reset_fix = parse_bool(val);
     else if (key_eq(key, "aica_race"))      p->aica_race      = parse_bool(val);
     else if (key_eq(key, "aica_ca_clamp"))  p->aica_ca_clamp  = parse_bool(val);
+    else if (key_eq(key, "aica_sa_fix"))  p->aica_sa_fix  = parse_bool(val);
     else if (key_eq(key, "sh4_clock"))      p->sh4_clock      = parse_sh4_clock(val);
     else if (key_eq(key, "jit_sbp"))        p->jit_sbp        = atoi(val);
     else if (key_eq(key, "jit_ici"))        p->jit_ici        = atoi(val);
@@ -2261,6 +2268,7 @@ static void preset_clear(GamePreset* cur)
     cur->arm7_reset_fix = -1;
     cur->aica_race = -1;
     cur->aica_ca_clamp = -1;
+    cur->aica_sa_fix = -1;
     cur->sh4_clock = -1;
     cur->jit_sbp = -1;
     cur->jit_ici = -1;
@@ -2433,6 +2441,7 @@ static void preset_apply_fields(const GamePreset* p)
     if (p->arm7_reset_fix >= 0) { g_arm7_reset_fix_preset = p->arm7_reset_fix; printf("  arm7_reset_fix -> %d\n", p->arm7_reset_fix); }
     if (p->aica_race      >= 0) { g_aica_race_preset      = p->aica_race;      printf("  aica_race      -> %d\n", p->aica_race);      }
     if (p->aica_ca_clamp  >= 0) { g_aica_ca_clamp_preset  = p->aica_ca_clamp;  printf("  aica_ca_clamp  -> %d\n", p->aica_ca_clamp);  }
+    if (p->aica_sa_fix >= 0) { g_aica_sa_fix_preset = p->aica_sa_fix; printf("  aica_sa_fix -> %d\n", p->aica_sa_fix); }
     if (p->sh4_clock      >= 0) { g_sh4_clock_preset      = p->sh4_clock;      printf("  sh4_clock      -> %d\n", p->sh4_clock);      }
     if (p->jit_sbp        >= 0) { g_jit_sbp_preset        = p->jit_sbp;        printf("  jit_sbp        -> %d\n", p->jit_sbp);        }
     if (p->jit_ici        >= 0) { g_jit_ici_preset        = p->jit_ici;        printf("  jit_ici        -> %d\n", p->jit_ici);        }

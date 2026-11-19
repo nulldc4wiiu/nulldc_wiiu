@@ -11,6 +11,7 @@ int g_advanced_alpha_preset = 1;
 int g_aica_ca_clamp_preset = 0;
 int g_aica_fast_preset = 1;
 int g_aica_race_preset = 1;
+int g_aica_sa_fix_preset = 1;
 int g_aniso_preset = 0;
 int g_arm7_batch_preset = 4;
 int g_arm7_jit_preset = 5;
@@ -293,6 +294,7 @@ extern const wiiu_preset wiiu_presets[] = {
     { "g_aica_ca_clamp_preset", &g_aica_ca_clamp_preset },
     { "g_aica_fast_preset", &g_aica_fast_preset },
     { "g_aica_race_preset", &g_aica_race_preset },
+    { "g_aica_sa_fix_preset", &g_aica_sa_fix_preset },
     { "g_aniso_preset", &g_aniso_preset },
     { "g_arm7_batch_preset", &g_arm7_batch_preset },
     { "g_arm7_jit_preset", &g_arm7_jit_preset },
