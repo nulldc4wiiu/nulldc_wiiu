@@ -898,10 +898,17 @@ static void adopt_scene()
 // the frame's vertices into clip space (from w x h Dreamcast pixels) at out; convert_frame puts its strips, volumes,
 // translucent order and fog values into the scene. CPU work only; the fog table texture is the GX2 thread's
 // (apply_fog_table)
-// frame-rate work switch (main_wiiu.cpp key):
+// frame-rate work switches (main_wiiu.cpp keys):
 //   conv_split2 (on): the helper also converts the modifier volume vertices (DOA2's fights: ~10,000 a frame, as
 //     many as the polygons), and the intake thread waits for it only after the strips, boxes and index lists
-int wiiu_exp_conv_split2 = 1;
+//   conv_dcbz (2, on): each output vertex is one 32-byte cache line, written whole: dcbz it rather than read it
+//     first; 2: the index list too
+int wiiu_exp_conv_split2 = 1, wiiu_exp_conv_dcbz = 2;
+static inline void conv_line(GpuVertex *o)
+{
+    if (wiiu_exp_conv_dcbz && !((uintptr_t)o & 31))
+        __asm__ volatile("dcbz 0,%0" : : "r"(o) : "memory");
+}
 static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 to, float hw, float hh, float scale)
 {
     for (u32 i = from; i < to; i++)
@@ -912,6 +919,7 @@ static void convert_vertices(const WiiuFrame *f, GpuVertex *out, u32 from, u32 t
         float d = invw * scale;
         if (d > 1.0f)
             d = 1.0f;
+        conv_line(&out[i]);
         out[i].x = (v.x / hw - 1.0f) * w;
         out[i].y = (1.0f - v.y / hh) * w;
         out[i].z = (2.0f * d - 1.0f) * w;
@@ -936,6 +944,7 @@ static void convert_mv(const WiiuFrame *f, GpuVertex *out, u32 base, u32 n, floa
         if (d > 1.0f)
             d = 1.0f;
         GpuVertex &o = out[base + i];
+        conv_line(&o);
         o.x = (v.x / hw - 1.0f) * w;
         o.y = (1.0f - v.y / hh) * w;
         o.z = (2.0f * d - 1.0f) * w;
@@ -1072,6 +1081,11 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
         sc->strip_idx[i] = ni;
         for (u32 k = 0; k < tris; k++)
         {
+            // conv_dcbz=2: a triangle that runs into a new cache line zeroes it rather than read it first
+            // (the line starts after idx[ni - 1]; never past the buffer: ni + 11 < IDX_MAX)
+            if (wiiu_exp_conv_dcbz >= 2 && ((uintptr_t)&idx[ni + 2] >> 5) != ((uintptr_t)&idx[ni] - 1) >> 5 &&
+                ni + 11 < IDX_MAX)
+                __asm__ volatile("dcbz 0,%0" : : "r"(&idx[ni + 2]) : "memory");
             idx[ni] = first + k + (k & 1);
             idx[ni + 1] = first + k + 1 - (k & 1);
             idx[ni + 2] = first + k + 2;
