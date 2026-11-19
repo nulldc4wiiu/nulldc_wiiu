@@ -90,11 +90,13 @@ starts.
 | Smooth frames (`smooth`) | on, off | two finished frames may wait to be shown; one frame more delay (next start) |
 | Reloaded code check (`code_check`) | on, off | catches games that load new code over old (Marvel vs. Capcom 2) (next start) |
 | Sound buffer (`sound_buf`) | 100 ms, 46 ms | fewer gaps, or less delay between picture and sound (next start) |
+| Disc speed (`disc_speed`) | 4x drive, real drive, instant | how fast the emulated drive reads; 4x has no load pauses (next start) |
 
 `config.txt` also takes `content=<folder>` (where to look for games) and `autoload=<file>` (start that game without
 the picker).
 
-**`wiiu.cfg`** (optional, one `key=value` per line; overrides the options page):
+**`wiiu.cfg`** (optional, one `key=value` per line; overrides the options page). The settings from `tr_depth` down
+are on by default; each turns off with 0, for testing a game that misbehaves:
 
 | Key | Values | Effect |
 |---|---|---|
@@ -109,6 +111,19 @@ the picker).
 | `exp_aica_thread` | 0, 1, 2 | sound mixing on the emulator's core (0), core 0 (1) or core 2 (2) |
 | `exp_sq_fast`, `exp_fm_x`, `exp_ps_ftrv` | 0, 1 | the parts of "Faster CPU code": store-queue writes, memory addressing, vector maths |
 | `exp_frame_queue` | 0, 1 | Smooth frames |
+| `tr_depth` | 1, 0 | auto-sorted translucent polygons drawn without depth writes, as the PVR does |
+| `ta_keyed` | 1, 0 | a render draws the TA list in the buffer it points at (DOA2's doppelganger scenes) |
+| `gd_async` | 1, 0 | a disc read that isn't in the read-ahead cache yet waits in emulated time, not on the SD card |
+| `mv_bbox` | 1, 0 | modifier volume passes cover only each volume's screen box |
+| `jit_tlive`, `jit_fconst`, `fipr_split` | 1, 0 | translated-code speedups: the T bit kept in a register, float constants from a pool, FIPR in two chains |
+| `sq_inline` | 2, 1, 0 | store-queue writes to the TA done by the translated code (2: vertex starts counted there too) |
+| `sq_guard` | 2, 1, 0 | store-queue stores tested when compiled, not trapped |
+| `sq_ram` | 1, 0 | store-queue writes to RAM done by the translated code |
+| `entry_cold` | 1, 0 | a translated block's cycle check falls through to the block |
+| `depth_inline`, `ta_dcbz` | 1, 0 | TA decode: depth scale gathered as strips are kept; output cache lines zeroed rather than read |
+| `conv_split2` | 1, 0 | the helper core also converts the modifier-volume vertices |
+| `conv_dcbz` | 2, 1, 0 | vertex conversion's output lines zeroed rather than read (2: the index list too) |
+| `conv_prio` | number | the conversion helper's thread priority (16: below the sound mixer; 0: as created) |
 | `g_<preset>` | number | any of nullDC4Wii's presets, e.g. `g_dynarec_preset=0` for the interpreter |
 
 ## Optimizations
