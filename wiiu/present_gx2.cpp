@@ -903,7 +903,10 @@ static void adopt_scene()
 //     many as the polygons), and the intake thread waits for it only after the strips, boxes and index lists
 //   conv_dcbz (2, on): each output vertex is one 32-byte cache line, written whole: dcbz it rather than read it
 //     first; 2: the index list too
-int wiiu_exp_conv_split2 = 1, wiiu_exp_conv_dcbz = 2;
+//   conv_prio (16, on): the helper's priority on core 0. 16 is below the AICA mixer (15) and level with the GX2
+//     thread, so neither waits for the helper (console fr2, fr3, fr5: DOA2 fights +0.6 to +1.3 frames shown a
+//     second and fewer underruns, MvC2 +1.8, no game slower); 0 = as created (14)
+int wiiu_exp_conv_split2 = 1, wiiu_exp_conv_dcbz = 2, wiiu_exp_conv_prio = 16;
 static inline void conv_line(GpuVertex *o)
 {
     if (wiiu_exp_conv_dcbz && !((uintptr_t)o & 31))
@@ -1005,6 +1008,8 @@ static void convert_frame(const WiiuFrame *f, GpuVertex *out, u32 *idx, float wi
     sc->screen[1] = 1.0f / hw;
     sc->screen[2] = 1.0f / hh;
     sc->screen[3] = scale;
+    if (wiiu_exp_conv_prio && conv_helper_up && OSGetThreadPriority(&conv_thread) != wiiu_exp_conv_prio)
+        OSSetThreadPriority(&conv_thread, wiiu_exp_conv_prio);
     u32 first_half = f->nv;
     const u32 mv_n = f->n_mv_tris * 3;
     sc->mv_base = f->nv;   // modifier volume triangles, then the full-screen quad, after the polygon vertices

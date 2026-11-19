@@ -353,6 +353,8 @@ static void load_wiiu_cfg()
             { extern int wiiu_exp_conv_split2; wiiu_exp_conv_split2 = atoi(value); }   // helper converts volumes too
         else if (!strcmp(key, "conv_dcbz"))
             { extern int wiiu_exp_conv_dcbz; wiiu_exp_conv_dcbz = atoi(value); }   // dcbz output vertex lines (2: indices too)
+        else if (!strcmp(key, "conv_prio"))
+            { extern int wiiu_exp_conv_prio; wiiu_exp_conv_prio = atoi(value); }   // the convert helper's priority
         else if (!strcmp(key, "ta_keyed"))
             { extern int wiiu_exp_ta_keyed; wiiu_exp_ta_keyed = atoi(value); }   // a render draws its own buffer's list (DOA2)
         else if (!strcmp(key, "jit_tlive"))
