@@ -111,7 +111,7 @@ are on by default; each turns off with 0, for testing a game that misbehaves:
 | `exp_aica_thread` | 0, 1, 2 | sound mixing on the emulator's core (0), core 0 (1) or core 2 (2) |
 | `exp_sq_fast`, `exp_fm_x`, `exp_ps_ftrv` | 0, 1 | the parts of "Faster CPU code": store-queue writes, memory addressing, vector maths |
 | `exp_frame_queue` | 0, 1 | Smooth frames |
-| `tr_depth` | 1, 0 | auto-sorted translucent polygons drawn without depth writes, as the PVR does |
+| `tr_depth` | 2, 1, 0 | auto-sorted translucent polygons drawn with depth >=; 2: each writes depth by its own bit, transparent pixels discarded (Shenmue's faces); 1: no depth writes |
 | `ta_keyed` | 1, 0 | a render draws the TA list in the buffer it points at (DOA2's doppelganger scenes) |
 | `gd_async` | 1, 0 | a disc read that isn't in the read-ahead cache yet waits in emulated time, not on the SD card |
 | `mv_bbox` | 1, 0 | modifier volume passes cover only each volume's screen box |

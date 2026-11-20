@@ -310,8 +310,14 @@ static u32 modvol_count, mv_base, quad_base, shad_scale;
 // (rend/gles/gldraw.cpp SetGPState). With their own Z-write bit, a translucent quad's transparent margins wrote depth
 // and hid what came after at the same or lesser depth: DOA2's stacked mode tiles, all at one depth, kept only the
 // first one drawn, and the fighter's name lost its bottom edge to the portrait tiles' margins. Pre-sorted frames keep
-// the polygons' own depth mode and Z-write bit (Flycast does the same)
-int wiiu_exp_tr_depth = 1;
+// the polygons' own depth mode and Z-write bit (Flycast does the same).
+// 2 (the default since 2026-11-20): depth >= as in 1, but each polygon writes depth by its own Z-write bit, and fully
+// transparent pixels of plainly blended polygons (source alpha, inverse source alpha) are discarded first, so their
+// margins write no depth. Without depth writes (1), the per-strip sort drew Shenmue's overlapping translucent head
+// strips in the wrong order: pieces of brow and mouth over Ryo's face. Sorting per triangle, as Flycast does, wasn't
+// enough either (stray shards); depth writes stand in for the PVR's per-pixel sort. 1: no depth writes, 0: the
+// polygons' own depth mode and Z-write bit (U1)
+int wiiu_exp_tr_depth = 2;
 static bool trans_autosort;
 // mv_bbox (Review 0, on by default since Review 1; mv_bbox=0 turns it off): each closing volume's screen box in canvas pixels (x0, y0, x1, y1; x0 = -1e30: whole screen), so
 // its stencil resolve and clear quads fill only the box instead of the whole target
@@ -1476,7 +1482,10 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
                 }
             }
             const bool tr_auto = pass == 2 && trans_autosort && wiiu_exp_tr_depth;
-            const u32 depth_key = tr_auto ? 0x100u : isp.DepthMode | isp.ZWriteDis << 3 | pcw.Shadow << 4;
+            // tr_depth=2: the polygon's own depth write; a plainly blended one's fully transparent pixels discarded
+            const bool tr_write = tr_auto && wiiu_exp_tr_depth == 2 && !isp.ZWriteDis;
+            const bool tr_discard = tr_write && tsp.SrcInstr == 4 && tsp.DstInstr == 5;
+            const u32 depth_key = tr_auto ? 0x100u | tr_write << 9 : isp.DepthMode | isp.ZWriteDis << 3 | pcw.Shadow << 4;
             if (depth_key != last_depth)
                 flush(BRK_DEPTH);
             if (depth_key == last_depth)
@@ -1484,7 +1493,7 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
             else if (pass == WIIU_LIST_BACKGROUND)
                 GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
             else if (tr_auto)
-                GX2SetDepthOnlyControl(TRUE, FALSE, depth_func[6]);   // tr_depth: >=, no depth writes
+                GX2SetDepthOnlyControl(TRUE, tr_write, depth_func[6]);   // tr_depth: >=; no depth writes (1), own bit (2)
             else if (pass == 2)
                 GX2SetDepthOnlyControl(isp.DepthMode != 7, !isp.ZWriteDis, depth_func[isp.DepthMode]);
             else
@@ -1514,11 +1523,11 @@ static void scene_body(u32 width, u32 height, GX2RBuffer *vbuf, GX2RBuffer *ibuf
                                    GX2_BLEND_COMBINE_MODE_ADD, FALSE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO,
                                    GX2_BLEND_COMBINE_MODE_ADD);
             last_blend = blend_key;
-            const u32 mode_key = pcw.Texture | tsp.UseAlpha << 1 | tsp.IgnoreTexA << 2;
+            const u32 mode_key = pcw.Texture | tsp.UseAlpha << 1 | tsp.IgnoreTexA << 2 | tr_discard << 3;
             if (mode_key != last_mode)
                 flush(BRK_MODE);
             if (mode_key != last_mode)
-                set_uniform(u_mode_loc, pcw.Texture ? 1.0f : 0.0f, pass == 4 ? pt_ref : -1.0f, tsp.UseAlpha ? 1.0f : 0.0f,
+                set_uniform(u_mode_loc, pcw.Texture ? 1.0f : 0.0f, pass == 4 ? pt_ref : tr_discard ? 0.5f / 255.0f : -1.0f, tsp.UseAlpha ? 1.0f : 0.0f,
                             tsp.IgnoreTexA ? 1.0f : 0.0f);
             last_mode = mode_key;
             // Gouraud from the parameter control word, as the TA does (it copies PCW's shading bits into the ISP word);
