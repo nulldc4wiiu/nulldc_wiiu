@@ -29,6 +29,20 @@ extern "C" int wiiu_gun_cross;                                      // drkMapleL
 extern "C" int wiiu_rumble;
 extern int wiiu_rumble_motors;                                      // rumble_wiiu.cpp
 void wiiu_label_draw(uint32_t *px, const char *s);                  // picker_wiiu.cpp
+// remapping (remap_wiiu.cpp)
+int wiiu_remap_count();
+int wiiu_remap_fn_count();
+const char *wiiu_remap_phys_label(int p);
+const char *wiiu_remap_fn_label(int f);
+int wiiu_remap_get(int ctl, int p);
+void wiiu_remap_set(int ctl, int p, int f);
+void wiiu_remap_reset(int ctl);
+std::string wiiu_remap_string(int ctl);
+uint32_t wiiu_turbo_mask();
+void wiiu_turbo_set(uint32_t m);
+std::string wiiu_turbo_string(uint32_t m);
+uint32_t wiiu_turbo_fn_bit(int f);
+extern int wiiu_stick_dpad_swap;
 void wiiu_menu_draw(uint32_t *px, const char *title, const char *const *rows, int n, int sel, const char *help);   // picker_wiiu.cpp
 void wiiu_menu_size(uint32_t *w, uint32_t *h);
 void wiiu_gx2_show_menu(const uint32_t *px, uint32_t w, uint32_t h);               // present_gx2.cpp
@@ -95,12 +109,17 @@ static uint32_t read_menu_buttons()
                                        { 180, MB_DOWN, "DOWN" }, { 200, MB_DOWN, "DOWN" }, { 270, MB_ACCEPT, "A" } };
         static const Step disc[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_DOWN, "DOWN" },
                                      { 300, MB_ACCEPT, "A" } };
+        // 7: DOWN x2, A (remap), DOWN, A (GamePad A: the next function), UP x3 (wraps to "Save for this game"), A, B, B
+        static const Step remap[] = { { 120, MB_DOWN, "DOWN" }, { 140, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" },
+                                      { 220, MB_DOWN, "DOWN" }, { 260, MB_ACCEPT, "A" }, { 300, MB_UP, "UP" },
+                                      { 320, MB_UP, "UP" }, { 340, MB_UP, "UP" }, { 380, MB_ACCEPT, "A" },
+                                      { 420, MB_BACK, "B" }, { 460, MB_BACK, "B" } };
         static const Step quick[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_ACCEPT, "A" },
                                       { 300, MB_BACK, "B" } };
 #define STEPS(a) a, (int)(sizeof(a) / sizeof(a[0]))
         struct Script { const Step *s; int n; };
         const Script sc = wiiu_home_script == 2 ? Script{ STEPS(restart) } : wiiu_home_script == 3 ? Script{ STEPS(picker) }
-                        : wiiu_home_script == 5 ? Script{ STEPS(disc) } : wiiu_home_script == 6 ? Script{ STEPS(quick) }
+                        : wiiu_home_script == 5 ? Script{ STEPS(disc) } : wiiu_home_script == 6 ? Script{ STEPS(quick) } : wiiu_home_script == 7 ? Script{ STEPS(remap) }
                         : Script{ STEPS(settings) };
 #undef STEPS
         const Step *script = sc.s;
@@ -376,14 +395,99 @@ static void quick_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *
     }
 }
 
+// remapping: for the GamePad or the Classic/Pro Controllers, each button's Dreamcast function (A steps it), the
+// stick/D-pad swap, turbo; it all applies at once, and "Save" keeps it for this game or for all games
+static void remap_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *home)
+{
+    int ctl = 0, sel = 0;
+    const int n = wiiu_remap_count();
+    // turbo choices, as Dreamcast function indexes (0 A, 1 B, 2 X, 3 Y)
+    static const int turbo_sets[][4] = { { -1 }, { 0, -1 }, { 1, -1 }, { 0, 1, -1 }, { 0, 1, 2, 3 } };
+    const int n_turbo = 5;
+    auto turbo_of = [&](int t) {
+        uint32_t m = 0;
+        for (int k = 0; k < 4 && turbo_sets[t][k] >= 0; k++)
+            m |= wiiu_turbo_fn_bit(turbo_sets[t][k]);
+        return m;
+    };
+    int turbo = 0;
+    for (int t = 0; t < n_turbo; t++)
+        if (turbo_of(t) == wiiu_turbo_mask())
+            turbo = t;
+    std::string saved;
+    for (;;)
+    {
+        std::vector<std::string> lines;
+        lines.push_back(std::string("Controller:  ") + (ctl ? "Classic and Pro Controllers" : "GamePad"));
+        for (int p = 0; p < n; p++)
+            lines.push_back(std::string(wiiu_remap_phys_label(p)) + ":  " + wiiu_remap_fn_label(wiiu_remap_get(ctl, p)));
+        lines.push_back(std::string("Stick and D-pad swapped:  ") + (wiiu_stick_dpad_swap ? "on" : "off"));
+        const std::string ts = wiiu_turbo_string(wiiu_turbo_mask());
+        lines.push_back("Turbo:  " + (ts.empty() ? std::string("none") : ts));
+        lines.push_back("Reset this controller");
+        lines.push_back("Save for this game");
+        lines.push_back("Save for all games");
+        // the Dreamcast functions no button gives
+        std::string missing;
+        for (int f = 0; f < wiiu_remap_fn_count() - 1; f++)
+        {
+            bool given = false;
+            for (int p = 0; p < n; p++)
+                given = given || wiiu_remap_get(ctl, p) == f;
+            if (!given)
+                missing += (missing.empty() ? "" : ", ") + std::string(wiiu_remap_fn_label(f));
+        }
+        const std::string help = (saved.empty() ? std::string() : saved + " ") +
+            (missing.empty() ? std::string("A: change. Changes apply at once; Save keeps them for the next start.")
+                             : "No button gives: " + missing + ".");
+        std::vector<const char *> rows;
+        for (const auto &l : lines)
+            rows.push_back(l.c_str());
+        const int r = run_page(px, w, h, (int)rows.size(), sel, [&](uint32_t *p, int s) {
+            wiiu_menu_draw(p, "Remap buttons", rows.data(), (int)rows.size(), s, help.c_str());
+        }, home);
+        if (r < 0)
+            return;
+        sel = r;
+        saved.clear();
+        if (r == 0)
+            ctl = !ctl;
+        else if (r <= n)
+            wiiu_remap_set(ctl, r - 1, (wiiu_remap_get(ctl, r - 1) + 1) % wiiu_remap_fn_count());
+        else if (r == n + 1)
+            wiiu_stick_dpad_swap = !wiiu_stick_dpad_swap;
+        else if (r == n + 2)
+        {
+            turbo = (turbo + 1) % n_turbo;
+            wiiu_turbo_set(turbo_of(turbo));
+        }
+        else if (r == n + 3)
+            wiiu_remap_reset(ctl);
+        else
+        {
+            const std::string path = r == n + 4 ? wiiu_game_settings_path(selectedFilePath) : wiiu_config_path();
+            const bool ok = wiiu_settings_set(path, "remap_gamepad", wiiu_remap_string(0).c_str()) &&
+                            wiiu_settings_set(path, "remap_classic", wiiu_remap_string(1).c_str()) &&
+                            wiiu_settings_set(path, "turbo", wiiu_turbo_string(wiiu_turbo_mask()).c_str()) &&
+                            wiiu_settings_set(path, "stick_dpad_swap", wiiu_stick_dpad_swap ? "1" : "");
+            saved = ok ? (r == n + 4 ? "Saved for this game." : "Saved for all games.") : "Couldn't save.";
+            printf("[home] remap %s: %s gamepad \"%s\" classic \"%s\"\n", ok ? "saved" : "NOT saved", path.c_str(),
+                   wiiu_remap_string(0).c_str(), wiiu_remap_string(1).c_str());
+            continue;
+        }
+        printf("[home] remap: %s\n", (r <= n + 3 ? rows[r] : ""));
+    }
+}
+
 // the menu: returns what the main loop should do (1 the game list, 2 the Wii U Menu, 3 restart the game)
-enum { ROW_RESUME, ROW_DISC, ROW_QUICK, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
+enum { ROW_RESUME, ROW_DISC, ROW_QUICK, ROW_REMAP, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
 static int run_menu()
 {
     struct Row { int id; const char *label, *help; };
     std::vector<Row> rows = {
         { ROW_RESUME, "Resume", "Back to the game. B or HOME does the same; HOME held opens the Wii U HOME Menu." },
         { ROW_QUICK, "Quick settings", "Fast-forward, crosshairs, rumble: changes that apply at once, for this run." },
+        { ROW_REMAP, "Remap buttons", "Which Dreamcast button each GamePad, Classic or Pro Controller button is; turbo." },
         { ROW_GAME_SETTINGS, "Settings for this game",
           "This game's own settings, over the ones for all games. Most take effect at the next start." },
         { ROW_ALL_SETTINGS, "Settings for all games",
@@ -424,6 +528,13 @@ static int run_menu()
             settings_page(px, w, h, id == ROW_GAME_SETTINGS, &home);
             if (home)
                 break;   // HOME leaves the menu from any page
+            continue;
+        }
+        if (id == ROW_REMAP)
+        {
+            remap_page(px, w, h, &home);
+            if (home)
+                break;
             continue;
         }
         if (id == ROW_QUICK)

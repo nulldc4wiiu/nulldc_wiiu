@@ -401,6 +401,8 @@ static void load_wiiu_cfg()
         else if (!strcmp(key, "home_script"))
             { extern int wiiu_home_script; wiiu_home_script = atoi(value); }   // test: which script drives the menu (1 settings, 2 restart, 3 game list)
 #endif
+        else if (!strcmp(key, "remote_pad"))
+            { extern int wiiu_remote_pad; wiiu_remote_pad = atoi(value); }   // 0: a Wii Remote is no pad (remap_wiiu.cpp)
         else if (!strcmp(key, "fast_forward"))
             { extern int wiiu_fast_forward; wiiu_fast_forward = atoi(value); }   // - held: fast-forward (home_menu_wiiu.cpp)
         else if (!strcmp(key, "ffwd"))
@@ -788,6 +790,10 @@ static int app_main()
     bool done = false;
     if (video)
         wiiu_home_menu_start();
+    {
+        void wiiu_remap_load();   // remap_wiiu.cpp: the remapping settings, this game's over all games'
+        wiiu_remap_load();
+    }
     while (wiiu_app_running())
     {
         if (video)

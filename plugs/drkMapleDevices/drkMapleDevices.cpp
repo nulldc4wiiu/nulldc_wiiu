@@ -598,6 +598,11 @@ int SS_ConnectedCount(void)
  * controller, and maps everything to Dreamcast format.
  * @param port Controller port (0-3)
  */
+#ifdef __WIIU__
+uint32_t wiiu_remap(int ctl, uint32_t bits);   // wiiu/remap_wiiu.cpp
+void wiiu_input_post(uint32_t port, uint32_t *wii, uint32_t *nunchuk, uint32_t *classic, int32_t *sx, int32_t *sy,
+                     bool nunchuk_attached);
+#endif
 void UpdateInputState(u32 port)
 {
     // Validate port number
@@ -634,6 +639,9 @@ void UpdateInputState(u32 port)
         // so only treat them as Classic Controller buttons once exp.type
         // confirms a Classic Controller is actually attached.
         classicButtons = wiiButtons & 0xFFFF0000;
+#ifdef __WIIU__
+        classicButtons = wiiu_remap(1, classicButtons);   // the Classic/Pro table (wiiu/remap_wiiu.cpp)
+#endif
         // Classic Controller left stick is raw 6-bit (0-63, center ~32), NOT
         // 0-255 like the Nunchuck. Scale it via its calibration data.
         joystick_t *ljs = &wpadData->exp.classic.ljs;
@@ -648,6 +656,10 @@ void UpdateInputState(u32 port)
     {
         WiiDRC_ScanPads();
         u32 drc = WiiDRC_ButtonsHeld();
+#ifdef __WIIU__
+        const u32 classicOthers = classicButtons;   // the GamePad's own bits go through its table (wiiu/remap_wiiu.cpp)
+        classicButtons = 0;
+#endif
 
         if (drc & WIIDRC_BUTTON_A)     classicButtons |= WPAD_CLASSIC_BUTTON_A;
         if (drc & WIIDRC_BUTTON_B)     classicButtons |= WPAD_CLASSIC_BUTTON_B;
@@ -658,10 +670,19 @@ void UpdateInputState(u32 port)
         if (drc & WIIDRC_BUTTON_DOWN)  classicButtons |= WPAD_CLASSIC_BUTTON_DOWN;
         if (drc & WIIDRC_BUTTON_LEFT)  classicButtons |= WPAD_CLASSIC_BUTTON_LEFT;
         if (drc & WIIDRC_BUTTON_RIGHT) classicButtons |= WPAD_CLASSIC_BUTTON_RIGHT;
+#ifdef __WIIU__
+        // L and ZL, R and ZR apart, so each can be remapped (ZL and ZR are the triggers as L and R are)
+        if (drc & WIIDRC_BUTTON_L)  classicButtons |= WPAD_CLASSIC_BUTTON_FULL_L;
+        if (drc & WIIDRC_BUTTON_ZL) classicButtons |= WPAD_CLASSIC_BUTTON_ZL;
+        if (drc & WIIDRC_BUTTON_R)  classicButtons |= WPAD_CLASSIC_BUTTON_FULL_R;
+        if (drc & WIIDRC_BUTTON_ZR) classicButtons |= WPAD_CLASSIC_BUTTON_ZR;
+        classicButtons = classicOthers | wiiu_remap(0, classicButtons);
+#else
         if (drc & (WIIDRC_BUTTON_L | WIIDRC_BUTTON_ZL))
             classicButtons |= WPAD_CLASSIC_BUTTON_FULL_L;
         if (drc & (WIIDRC_BUTTON_R | WIIDRC_BUTTON_ZR))
             classicButtons |= WPAD_CLASSIC_BUTTON_FULL_R;
+#endif
 
         // Left stick: calibrated raw range is only about +/-72, so scale
         // towards +/-127 (ClampAnalogValue clamps any overshoot). Only used
@@ -714,6 +735,11 @@ void UpdateInputState(u32 port)
     // Check for exit combination (always live, regardless of layout, so a
     // typo in user_controls.cfg can never lock a player out of the menu)
     CheckExitCombination(wiiButtons, gcButtons, classicButtons);
+#ifdef __WIIU__
+    // the Remote rule, the stick/D-pad swap and turbo (wiiu/remap_wiiu.cpp), after the exit check saw the real buttons
+    wiiu_input_post(port, &wiiButtons, &nunchuckButtons, &classicButtons, &expStickX, &expStickY,
+                    wpadData && wpadData->exp.type == WPAD_EXP_NUNCHUK);
+#endif
 
     int specialLayout = get_special_layout_preset();
 
