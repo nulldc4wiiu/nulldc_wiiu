@@ -240,6 +240,7 @@ WiiuFrame *wiiu_frame_publish(WiiuFrame *done, WiiuFrame *frames, const WiiuFram
 // the picker's image, sharper than the game framebuffer path allows; it only exists while the picker is up
 static GX2Texture ui_tex;
 static bool ui_active;
+static bool ui_overlay;   // the HOME menu: ui_tex blended over the game's last picture instead of in its place
 void wiiu_gx2_show_ui(const u32 *px, u32 w, u32 h)
 {
     if (!ui_tex.surface.image)
@@ -264,8 +265,14 @@ void wiiu_gx2_show_ui(const u32 *px, u32 w, u32 h)
     GX2RUnlockSurfaceEx(&ui_tex.surface, 0, (GX2RResourceFlags)0);
     ui_active = true;
 }
+void wiiu_gx2_show_menu(const u32 *px, u32 w, u32 h)
+{
+    wiiu_gx2_show_ui(px, w, h);
+    ui_overlay = true;
+}
 void wiiu_gx2_hide_ui()
 {
+    ui_overlay = false;
     if (!ui_tex.surface.image)
         return;
     ui_active = false;
@@ -1761,6 +1768,17 @@ static void blit(GX2Texture *t)
     GX2SetPixelSampler(&sampler, group.pixelShader->samplerVars[0].location);
     GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
 }
+// the HOME menu's image over what blit() drew: alpha-blended, with no depth test (the quad is at the same depth as
+// the picture under it)
+static void blit_over(GX2Texture *t)
+{
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0xFF, FALSE, TRUE);
+    GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+                       GX2_BLEND_COMBINE_MODE_ADD, FALSE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
+    blit(t);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+}
 
 // ---- time report and frame loop ----------------------------------------------------------------------
 
@@ -1892,6 +1910,12 @@ void wiiu_gx2_frame()
         else
             WHBGfxBeginRenderDRC();
         WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        if (ui_active && ui_overlay)
+        {
+            blit(show_3d ? &rt_tex : &tex);   // the paused game's last picture, the HOME menu over it
+            blit_over(&ui_tex);
+        }
+        else
         blit(ui_active ? &ui_tex : show_3d ? &rt_tex : &tex);
         if (screen == 0)
             WHBGfxFinishRenderTV();

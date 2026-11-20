@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include "types.h"
+#include <sys/stat.h>   // mkdir (gamecfg/); after types.h, whose config.h redefines the endian macros
 #include "kpad_wiiu.h"
 #include "font_roboto.h"
 #include "picker/picker_core.h"
@@ -246,9 +247,29 @@ const picker_option options[] = {
       "loads. Next start.", disc_speed, 3, 0 },
 };
 int options_count() { return (int)(sizeof(options) / sizeof(options[0])); }
+const int WIIU_GAME_OPTIONS = 4;   // fastmem, lightgun, render, slow_sound: read after the game is chosen
 const char *option_label(int i) { return options[i].label; }
 const char *option_help(int i) { return i >= 0 && i < options_count() ? options[i].help : nullptr; }
 } // namespace
+
+// the HOME menu (home_menu_wiiu.cpp), drawn over the paused game: the picture dimmed to half, a title, the rows with
+// the selected one highlighted, and a help line at the bottom
+void wiiu_menu_draw(u32 *px, const char *title, const char *const *rows, int n, int sel, const char *help)
+{
+    for (u32 i = 0; i < W * H; i++)
+        px[i] = 0x00000080;   // black at half alpha: the game shows through, dimmed
+    text(px, MARGIN, 2, title, HILITE);
+    for (int i = 0; i < n; i++)
+    {
+        char line[160];
+        snprintf(line, sizeof(line), "%s %s", i == sel ? ">" : " ", rows[i]);
+        text(px, MARGIN, 4 + i, line, i == sel ? HILITE : FG);
+    }
+    if (help)
+        text_wrapped(px, MARGIN, H / FONT_LINE - 4, help, DIM);
+}
+void wiiu_menu_size(u32 *w, u32 *h) { *w = W; *h = H; }
+
 
 static void setup(const char *home)
 {
@@ -303,9 +324,132 @@ static void setup(const char *home)
 }
 
 // the options' values from config.txt (written by the picker's options page), whether the picker runs or not
+// ---- settings for the HOME menu (home_menu_wiiu.cpp) -------------------------------------------------------
+// Layers, later wins: the defaults, config.txt (all games), gamecfg/<game>.txt (one game). A game's name is its disc
+// file's, without the folder, the extension and a " (Disc N)" part, so a disc set shares one file. Only the options
+// read after the game is chosen (the first WIIU_GAME_OPTIONS: fast memory, light gun, 3D resolution, sound when slow)
+// can be set per game: the speed options are read before the picker runs.
+extern char selectedFilePath[512];   // main_wiiu.cpp
+static std::string settings_home;
+std::string wiiu_game_name(const char *path)
+{
+    std::string n = path;
+    const size_t slash = n.find_last_of("/:");
+    if (slash != std::string::npos)
+        n = n.substr(slash + 1);
+    const size_t dot = n.find_last_of('.');
+    if (dot != std::string::npos)
+        n = n.substr(0, dot);
+    const size_t disc = n.find(" (Disc ");
+    if (disc != std::string::npos)
+    {
+        const size_t close = n.find(')', disc);
+        n.erase(disc, close == std::string::npos ? std::string::npos : close + 1 - disc);
+    }
+    return n.empty() ? "no disc" : n;
+}
+std::string wiiu_game_settings_path(const char *game_path)
+{
+    return settings_home + "gamecfg/" + wiiu_game_name(game_path) + ".txt";
+}
+int wiiu_option_count() { return options_count(); }
+const char *wiiu_option_key(int i) { return options[i].key; }
+const char *wiiu_option_label(int i) { return options[i].label; }
+const char *wiiu_option_help(int i) { return options[i].help; }
+int wiiu_option_values(int i) { return options[i].n_values; }
+const char *wiiu_option_value_name(int i, int v) { return options[i].values[v]; }
+int wiiu_option_value(int i) { return picker_core_option(i); }
+// the value index of `value` for option i, -1 if it isn't one of its values
+static int option_index(int i, const char *value)
+{
+    for (int v = 0; v < options[i].n_values; v++)
+        if (!strcmp(options[i].values[v], value))
+            return v;
+    return -1;
+}
+// a key=value file's value for key, or "" (gamecfg files; config.txt goes through picker_core)
+std::string wiiu_settings_get(const std::string &path, const char *key)
+{
+    FILE *f = fopen(path.c_str(), "r");
+    if (!f)
+        return "";
+    char line[256];
+    std::string found;
+    const size_t kl = strlen(key);
+    while (fgets(line, sizeof(line), f))
+        if (!strncmp(line, key, kl) && line[kl] == '=')
+        {
+            found = line + kl + 1;
+            while (!found.empty() && (found.back() == '\n' || found.back() == '\r'))
+                found.pop_back();
+        }
+    fclose(f);
+    return found;
+}
+// key=value set in a settings file (value "": removed), written whole to <path>.new and renamed over it, so a cut
+// power leaves the old file or the new one, never half of one
+bool wiiu_settings_set(const std::string &path, const char *key, const char *value)
+{
+    std::vector<std::string> lines;
+    if (FILE *f = fopen(path.c_str(), "r"))
+    {
+        char line[256];
+        while (fgets(line, sizeof(line), f))
+            lines.push_back(line);
+        fclose(f);
+    }
+    const size_t kl = strlen(key);
+    bool done = false;
+    for (auto it = lines.begin(); it != lines.end();)
+        if (!strncmp(it->c_str(), key, kl) && (*it)[kl] == '=')
+        {
+            if (!done && *value)
+            {
+                *it = std::string(key) + "=" + value + "\n";
+                done = true;
+                ++it;
+            }
+            else
+                it = lines.erase(it);
+        }
+        else
+            ++it;
+    if (!done && *value)
+        lines.push_back(std::string(key) + "=" + value + "\n");
+    const size_t slash = path.find_last_of('/');
+    if (slash != std::string::npos)
+        mkdir(path.substr(0, slash).c_str(), 0777);
+    const std::string tmp = path + ".new";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f)
+        return false;
+    for (const auto &l : lines)
+        fputs(l.c_str(), f);
+    const bool ok = fflush(f) == 0;
+    fclose(f);
+    if (!ok)
+        return false;
+    remove(path.c_str());
+    return rename(tmp.c_str(), path.c_str()) == 0;
+}
+// config.txt (all games): through picker_core's own file, so the picker shows the same values
+std::string wiiu_config_path() { return settings_home + "config.txt"; }
+
 void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *render_width, bool *keep_pitch)
 {
     setup(home);
+    settings_home = home;
+    // the game's own settings, over config.txt's
+    for (int i = 0; i < WIIU_GAME_OPTIONS && selectedFilePath[0]; i++)
+    {
+        const std::string v = wiiu_settings_get(wiiu_game_settings_path(selectedFilePath), options[i].key);
+        const int idx = v.empty() ? -1 : option_index(i, v.c_str());
+        if (idx >= 0)
+        {
+            picker_core_set_option(i, idx);
+            printf("[settings] %s: %s=%s\n", wiiu_game_name(selectedFilePath).c_str(), options[i].key, v.c_str());
+        }
+    }
     *fastmem = picker_core_option(0) == 0;    // on_off: index 0 is "on"
     *lightgun = picker_core_option(1) == 1;   // off_on: index 1 is "on"
     *render_width = picker_core_option(2) == 1 ? 640 : 960;
@@ -317,6 +461,7 @@ void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_cor
                                bool *code_check, int *sound_buffer_ms, int *disc_kbps)
 {
     setup(home);
+    settings_home = home;
     *gfx_core = picker_core_option(4) == 0;
     *sound_core = picker_core_option(5) == 0;
     *jit_fast = picker_core_option(6) == 0;

@@ -202,6 +202,7 @@ static int audio_buffer_ms;
 void wiiu_audio_tune(int buffer_ms);
 static bool picker = true;   // wiiu.cfg picker=0: no game picker even without file= (boots the BIOS)
 static volatile bool emu_running, exit_requested, exit_requested_by_core;
+static int home_relaunch;   // the HOME menu: 1 "Quit to the game list" (the app starts again, at the picker), 3 "Restart the game"
 
 // back to the Wii U Menu; ProcUI then reports the exit to the main loop
 static void request_exit()
@@ -209,6 +210,12 @@ static void request_exit()
     if (exit_requested)
         return;
     exit_requested = true;
+    if (home_relaunch)
+    {
+        printf(home_relaunch == 3 ? "[home] restarting the game\n" : "[home] back to the game list\n");
+        SYSRelaunchTitle(0, nullptr);
+        return;
+    }
     SYSLaunchMenu();
 }
 
@@ -353,6 +360,14 @@ static void load_wiiu_cfg()
             { extern int wiiu_exp_conv_split2; wiiu_exp_conv_split2 = atoi(value); }   // helper converts volumes too
         else if (!strcmp(key, "conv_dcbz"))
             { extern int wiiu_exp_conv_dcbz; wiiu_exp_conv_dcbz = atoi(value); }   // dcbz output vertex lines (2: indices too)
+#ifdef WIIU_INSTRUMENT
+        else if (!strcmp(key, "home_test"))
+            { extern int wiiu_home_test; wiiu_home_test = atoi(value); }   // test: a HOME press N s in, the menu driven (home_menu_wiiu.cpp)
+        else if (!strcmp(key, "home_script"))
+            { extern int wiiu_home_script; wiiu_home_script = atoi(value); }   // test: which script drives the menu (1 settings, 2 restart, 3 game list)
+#endif
+        else if (!strcmp(key, "home_menu"))
+            { extern int wiiu_home_menu; wiiu_home_menu = atoi(value); }   // HOME opens nullDC's menu (home_menu_wiiu.cpp)
         else if (!strcmp(key, "conv_prio"))
             { extern int wiiu_exp_conv_prio; wiiu_exp_conv_prio = atoi(value); }   // the convert helper's priority
         else if (!strcmp(key, "ta_keyed"))
@@ -446,6 +461,16 @@ static int emu_thread(int argc, const char **argv)
 int wiiu_exp_gx2_core;
 bool wiiu_gfx_down;   // shut down for the background: wiiu_gx2_shutdown leaves it
 static volatile bool proc_running = true, gfx_want_pause, gfx_parked, app_done;
+// the HOME menu (home_menu_wiiu.cpp): park the emulator between frames, as the foreground release does, or let it go
+void wiiu_emu_pause(bool pause)
+{
+    emu_pause_req = pause;
+    for (int i = 0; i < 500 && pause && !emu_paused && emu_running; i++)
+        OSSleepTicks(OSMillisecondsToTicks(1));
+}
+void wiiu_home_menu_start();
+void wiiu_home_menu_acquired();
+int wiiu_home_menu_tick();
 static uint32_t gfx_release(void *)
 {
     emu_pause_req = true;
@@ -462,6 +487,7 @@ static uint32_t gfx_acquire(void *)
 {
     gfx_want_pause = false;
     emu_pause_req = false;
+    wiiu_home_menu_acquired();
     return 0;
 }
 static void gfx_callbacks()
@@ -568,6 +594,19 @@ static int app_main()
     if (wiiu_exp_gx2_core)
         gfx_callbacks();
     marker(video ? "gx2" : "gx2 failed");
+    // the HOME menu's "Restart the game" (home_menu_wiiu.cpp): the app started again with this game, without the picker
+    if (FILE *rf = fopen(NULLDC_HOME "restart.txt", "r"))
+    {
+        char p[512] = "";
+        if (fgets(p, sizeof(p), rf))
+        {
+            p[strcspn(p, "\r\n")] = 0;
+            snprintf(selectedFilePath, sizeof(selectedFilePath), "%s", p);
+            printf("[home] restarting '%s'\n", selectedFilePath);
+        }
+        fclose(rf);
+        remove(NULLDC_HOME "restart.txt");
+    }
     // no game named: let the user choose one
     if (video && !selectedFilePath[0] && picker)
     {
@@ -677,12 +716,20 @@ static int app_main()
     OSTime start = OSGetSystemTime();
     int last_report = -1;
     bool done = false;
+    if (video)
+        wiiu_home_menu_start();
     while (wiiu_app_running())
     {
         if (video)
             wiiu_gx2_frame();   // waits for VSync
         else
             OSSleepTicks(OSMillisecondsToTicks(100));
+        if (video && !done && emu_running)
+            if (const int a = wiiu_home_menu_tick())
+            {
+                home_relaunch = a == 1 || a == 3 ? a : 0;   // 1: the game list, 2: the Wii U Menu, 3: the game again (restart.txt)
+                exit_requested_by_core = true;
+            }
         int seconds = (int)OSTicksToSeconds(OSGetSystemTime() - start);
         if (seconds != last_report && !done)
         {

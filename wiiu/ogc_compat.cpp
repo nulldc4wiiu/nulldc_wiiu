@@ -129,6 +129,7 @@ extern "C" uint8_t PAD_TriggerR(int pad) { return 0; }
 // controller plugin's GamePad mapping works unchanged
 static u32 drc_buttons;
 static s16 drc_lx, drc_ly;
+static volatile bool drc_home;
 
 bool WiiDRC_Inited() { return true; }
 bool WiiDRC_ScanPads()
@@ -151,6 +152,7 @@ bool WiiDRC_ScanPads()
         if (st.hold & m.vpad)
             b |= m.drc;
     drc_buttons = b;
+    drc_home = (st.hold & VPAD_BUTTON_HOME) != 0;
     // libwiidrc's stick reads about +-73; the plugin scales that by 7/4 to the Dreamcast's +-128
     drc_lx = (s16)(st.leftStick.x * 73.0f);
     drc_ly = (s16)(st.leftStick.y * 73.0f);
@@ -162,6 +164,17 @@ s16 WiiDRC_lStickX() { return drc_lx; }
 s16 WiiDRC_lStickY() { return drc_ly; }
 
 // the buttons the core sees, for the log when it asks to exit (main_wiiu.cpp)
+// the HOME menu (home_menu_wiiu.cpp): HOME held on the GamePad, a Wii Remote, or a Classic or Pro Controller (its
+// HOME in the extension bits), as the emulator thread last read them
+extern "C" bool wiiu_home_held()
+{
+    if (drc_home)
+        return true;
+    for (int c = 0; c < 4; c++)
+        if (wpad_held[c] & (0x0080u | (0x0800u << 16)))   // HOME: 0x0080 in the libogc core bits (kpad_wiiu.cpp), Classic and Pro HOME (0x0800) in the extension
+            return true;
+    return false;
+}
 extern "C" void wiiu_input_state(u32 *drc, u32 *wpad4)
 {
     *drc = drc_buttons;

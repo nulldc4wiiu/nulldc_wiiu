@@ -143,6 +143,11 @@ void picker_core_init(const picker_cfg *cfg)
 }
 
 int picker_core_option(int i) { return i >= 0 && i < g_cfg->n_options && i < MAX_OPTIONS ? g_opt[i] : 0; }
+void picker_core_set_option(int i, int v)
+{
+    if (i >= 0 && i < g_cfg->n_options && i < MAX_OPTIONS && v >= 0 && v < g_cfg->options[i].n_values)
+        g_opt[i] = v;   /* not saved: a layer on top of config.txt (the HOME menu's per-game settings) */
+}
 const char *picker_core_option_value(int i) { return g_cfg->options[i].values[picker_core_option(i)]; }
 
 /* config.txt with option i's line replaced (or added); the other lines kept as they are */

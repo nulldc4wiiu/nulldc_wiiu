@@ -108,6 +108,8 @@ int picker_core_help_pages(void);
  * page, up/down choose, ACCEPT steps the value and saves config.txt, OPTIONS or HELP goes back. */
 int picker_core_option(int i);
 const char *picker_core_option_value(int i);
+/* Sets option i to value index v in memory only (config.txt is unchanged): a per-game layer read after config.txt. */
+void picker_core_set_option(int i, int v);
 
 #ifdef __cplusplus
 }
