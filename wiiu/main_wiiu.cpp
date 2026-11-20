@@ -332,6 +332,7 @@ int os_msgbox(const wchar *text, unsigned int type)
 }
 
 extern "C" void wiiu_input_state(u32 *drc, u32 *wpad4);   // ogc_compat.cpp
+extern "C" int wiiu_gun_v2, wiiu_gun_cross;                // drkMapleLightGun.cpp
 
 extern "C" void WiiExitToLoader(void)
 {
@@ -396,6 +397,15 @@ static void load_wiiu_cfg()
             { extern int wiiu_home_test; wiiu_home_test = atoi(value); }   // test: a HOME press N s in, the menu driven (home_menu_wiiu.cpp)
         else if (!strcmp(key, "home_script"))
             { extern int wiiu_home_script; wiiu_home_script = atoi(value); }   // test: which script drives the menu (1 settings, 2 restart, 3 game list)
+#endif
+        else if (!strcmp(key, "gun_v2"))
+            wiiu_gun_v2 = atoi(value);   // touch gun, two guns, auto by game (drkMapleLightGun.cpp)
+        else if (!strcmp(key, "gun_cross"))
+            wiiu_gun_cross = atoi(value);   // gun_v2's crosshairs (0: none)
+#ifdef WIIU_INSTRUMENT
+        else if (!strcmp(key, "touch_test"))
+            { extern int wiiu_touch_test_x, wiiu_touch_test_y, wiiu_touch_test_at;   // test: taps at x,y (GamePad pixels) every 3 s from s seconds
+              sscanf(value, "%d,%d,%d", &wiiu_touch_test_x, &wiiu_touch_test_y, &wiiu_touch_test_at); }
 #endif
         else if (!strcmp(key, "home_menu"))
             { extern int wiiu_home_menu; wiiu_home_menu = atoi(value); }   // HOME opens nullDC's menu (home_menu_wiiu.cpp)
@@ -692,6 +702,18 @@ static int app_main()
         g_fastmem_preset = fastmem >= 0 ? fastmem : opt_fastmem;
         if (!controller_type_set)
             g_controller_type = opt_lightgun ? 1 : 0;
+        {
+            // gun_v2: the light-gun games turn the gun on for themselves (the frontend's rule: auto by game, so the
+            // option can stay off for every other game); the name is the disc file's
+            static const char *const gun_games[] = { "House of the Dead 2", "Confidential Mission", "Death Crimson OX" };
+            if (wiiu_gun_v2 && !controller_type_set && !g_controller_type)
+                for (const char *g : gun_games)
+                    if (strcasestr(selectedFilePath, g))
+                    {
+                        g_controller_type = 1;
+                        printf("[wiiu] %s: light gun on (a gun game)\n", g);
+                    }
+        }
         if (!rt_width_set)
             wiiu_gx2_set_render_width(opt_width);
         wiiu_audio_min_speed = opt_keep_pitch ? 0.97f : 0.60f;

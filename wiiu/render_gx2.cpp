@@ -875,6 +875,8 @@ void SoftReset()
 extern "C" int get_controller_type();
 extern "C" u16 GetLightGunX(int port);
 extern "C" u16 GetLightGunY(int port);
+extern "C" int wiiu_gun_v2, wiiu_gun_cross;   // drkMapleLightGun.cpp: gun_v2 (touch gun, two crosshairs), gun_cross
+extern "C" int wiiu_gun_source(int port);       // what aimed a gun this frame: 1 a Remote, 2 touch
 OSTime wiiu_decode_ticks[3];   // inside TA decode: the TA command loop, the depth-scale pass, the rest
 u32 wiiu_decode_blocks;
 void wiiu_ta_decode(WiiuFrame *f)
@@ -954,10 +956,13 @@ void wiiu_ta_decode(WiiuFrame *f)
     }
     // light gun: a Dreamcast gun has no on-screen cursor (it was aimed down the barrel at a CRT), so draw a crosshair
     // where the Wii Remote points: two bars, last in the translucent list, without depth
-    if (get_controller_type() == 1 && GetLightGunX(0) != 0xFFFF && f->nv + 8 <= WIIU_MAX_VERTICES && f->ns + 2 <= WIIU_MAX_STRIPS)
+    // (gun_v2: one per Remote gun, red and blue, none for the touch gun; gun_cross=0: none)
+    for (int port = 0; port < (wiiu_gun_v2 ? 2 : 1); port++)
+    if (get_controller_type() == 1 && GetLightGunX(port) != 0xFFFF && f->nv + 8 <= WIIU_MAX_VERTICES && f->ns + 2 <= WIIU_MAX_STRIPS &&
+        (!wiiu_gun_v2 || (wiiu_gun_cross && wiiu_gun_source(port) == 1)))
     {
         const float sx = f->canvas_w / 640.0f, sy = f->canvas_h / 480.0f;
-        const float cx = GetLightGunX(0) * sx, cy = GetLightGunY(0) * sy, len = 12.0f * sx, th = 1.5f * sx;
+        const float cx = GetLightGunX(port) * sx, cy = GetLightGunY(port) * sy, len = 12.0f * sx, th = 1.5f * sx;
         const float z = f->max_invw > 0.0f ? f->max_invw : 1.0f;
         const float bars[2][4] = { { cx - len, cy - th, cx + len, cy + th }, { cx - th, cy - len, cx + th, cy + len } };
         for (const auto &b : bars)
@@ -971,7 +976,7 @@ void wiiu_ta_decode(WiiuFrame *f)
             st.tsp = 1u << 29 | 2u << 22;               // source one, destination zero, no fog
             const float xy[4][2] = { { b[0], b[1] }, { b[2], b[1] }, { b[0], b[3] }, { b[2], b[3] } };
             for (const auto &c : xy)
-                f->v[f->nv++] = { c[0], c[1], z, 0xFF3030FFu, 0, 0.0f, 0.0f };
+                f->v[f->nv++] = { c[0], c[1], z, port ? 0x3070FFFFu : 0xFF3030FFu, 0, 0.0f, 0.0f };
             f->s[f->ns++] = st;
         }
     }

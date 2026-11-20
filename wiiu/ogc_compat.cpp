@@ -130,6 +130,39 @@ extern "C" uint8_t PAD_TriggerR(int pad) { return 0; }
 static u32 drc_buttons;
 static s16 drc_lx, drc_ly;
 static volatile bool drc_home;
+static volatile bool drc_touch;
+static volatile u16 drc_tx, drc_ty;
+#ifdef WIIU_INSTRUMENT
+int wiiu_touch_test_x = -1, wiiu_touch_test_y, wiiu_touch_test_at;   // touch_test=x,y,s: taps there every 3 s from s seconds
+extern u32 wiiu_vblanks;
+#endif
+// gun_v2 (drkMapleLightGun.cpp): both sensor bars powered, so a Remote aims at the TV or the GamePad
+extern "C" void WPADSetSensorBar(int32_t on);
+extern "C" void wiiu_sensor_bars_on()
+{
+    static bool on;
+    if (on)
+        return;
+    WPADSetSensorBar(1);
+    VPADSetSensorBar(VPAD_CHAN_0, TRUE);
+    on = true;
+    printf("[LightGun] sensor bars on (TV and GamePad)\n");
+}
+// the GamePad's touch: true and the point (854x480) while touched
+extern "C" bool WiiDRC_Touch(u16 *x, u16 *y)
+{
+#ifdef WIIU_INSTRUMENT
+    if (wiiu_touch_test_x >= 0 && wiiu_vblanks > (u32)wiiu_touch_test_at * 60 && wiiu_vblanks % 180 < 4)
+    {
+        *x = (u16)wiiu_touch_test_x;
+        *y = (u16)wiiu_touch_test_y;
+        return true;
+    }
+#endif
+    *x = drc_tx;
+    *y = drc_ty;
+    return drc_touch;
+}
 
 bool WiiDRC_Inited() { return true; }
 bool WiiDRC_ScanPads()
@@ -153,6 +186,14 @@ bool WiiDRC_ScanPads()
             b |= m.drc;
     drc_buttons = b;
     drc_home = (st.hold & VPAD_BUTTON_HOME) != 0;
+    {
+        // the touch screen, in GamePad pixels (854x480), for the touch gun (drkMapleLightGun.cpp)
+        VPADTouchData tp;
+        VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &tp, &st.tpNormal);
+        drc_touch = st.tpNormal.touched && tp.validity == VPAD_VALID;
+        drc_tx = tp.x;
+        drc_ty = tp.y;
+    }
     // libwiidrc's stick reads about +-73; the plugin scales that by 7/4 to the Dreamcast's +-128
     drc_lx = (s16)(st.leftStick.x * 73.0f);
     drc_ly = (s16)(st.leftStick.y * 73.0f);

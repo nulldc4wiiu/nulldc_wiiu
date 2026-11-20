@@ -90,6 +90,54 @@ extern "C"
 }
 
 extern "C" int get_player_count(void);
+#ifdef __WIIU__
+// gun_v2=1 (off until confirmed on a console; features plan phase 4, the frontend's light gun rules): the GamePad's
+// touch screen is a gun too (a tap aims and fires, a tap on the black bars beside the picture reloads), gun 1 when no
+// Wii Remote points at the screen, else gun 2; both sensor bars are powered; a crosshair for each Remote gun (not for
+// touch, where the finger is the aim). gun_cross=0 hides the crosshairs
+extern "C" bool WiiDRC_Touch(u16 *x, u16 *y);   // wiiu/ogc_compat.cpp
+extern "C" { int wiiu_gun_v2, wiiu_gun_cross = 1; }
+static int gun_src[MAX_LG_PLAYERS];               // what aimed each gun this frame: 0 nothing, 1 a Remote, 2 touch
+static u32 remote_seen[MAX_LG_PLAYERS];           // frames since a Remote last pointed at the screen, per port
+static int touch_fire;                            // polls the touch shot stays down (a tap is shorter than a poll)
+static u16 touch_x = DC_OFFSCREEN, touch_y = DC_OFFSCREEN;
+extern "C" int wiiu_gun_source(int port) { return port >= 0 && port < MAX_LG_PLAYERS ? gun_src[port] : 0; }
+extern "C" void wiiu_sensor_bars_on();   // wiiu/ogc_compat.cpp: TV and GamePad bars
+// the touch gun: the port it plays, and its aim and trigger this poll; false when it isn't this port's
+static bool touch_gun(u32 port, bool *fire)
+{
+    const u32 touch_port = remote_seen[0] < 120 ? 1 : 0;   // a Remote aimed lately: it's gun 1, touch is gun 2
+    if (port != touch_port || port >= (u32)get_player_count())
+        return false;
+    u16 x, y;
+    if (WiiDRC_Touch(&x, &y))
+    {
+        // the 4:3 picture fills the GamePad's 854x480 between x 107 and 747; the bars beside it are the edge of the
+        // screen: a shot there is off-screen, the reload
+        if (x >= 107 && x < 747)
+        {
+            touch_x = (u16)((x - 107) * DC_SCREEN_W / 640);
+            touch_y = (u16)(y * DC_SCREEN_H / 480);
+        }
+        else
+            touch_x = touch_y = DC_OFFSCREEN;
+        if (touch_fire <= 0)
+        {
+            static int logged;
+            if (logged++ < 20)
+                printf("[LightGun] touch shot at %u,%u: gun %u at %u,%u\n", x, y, port + 1, touch_x, touch_y);
+        }
+        touch_fire = 3;
+    }
+    if (touch_fire <= 0)
+        return false;
+    touch_fire--;
+    gun_x[port] = touch_x;
+    gun_y[port] = touch_y;
+    *fire = true;
+    return true;
+}
+#endif
 
 /**
  * Scales a Wii IR coordinate to a Dreamcast screen coordinate.
@@ -144,12 +192,20 @@ void UpdateLightGunState(u32 port)
     }
 
     WPAD_ScanPads();
+#ifdef __WIIU__
+    if (wiiu_gun_v2)
+        wiiu_sensor_bars_on();
+#endif
 
     // --- IR aiming ---
     WPADData *data = WPAD_Data(port);
 
     if (data && data->ir.valid)
     {
+#ifdef __WIIU__
+        remote_seen[port] = 0;
+        gun_src[port] = 1;
+#endif
         // ir.x is 0..(WII_IR_W-1), ir.y is 0..(WII_IR_H-1) after SetVRes.
         // The Wii IR camera origin is top-left; DC expects same origin.
         gun_x[port] = ScaleIRCoord((s32)data->ir.x, WII_IR_W, DC_SCREEN_W);
@@ -160,6 +216,11 @@ void UpdateLightGunState(u32 port)
         // IR not visible — report off-screen shot
         gun_x[port] = DC_OFFSCREEN;
         gun_y[port] = DC_OFFSCREEN;
+#ifdef __WIIU__
+        if (remote_seen[port] < 0xFFFF)
+            remote_seen[port]++;
+        gun_src[port] = 0;
+#endif
     }
 
     // --- Buttons ---
@@ -171,6 +232,17 @@ void UpdateLightGunState(u32 port)
     // Shoot — B trigger (most natural for a gun)
     if (wiiButtons & WPAD_BUTTON_B)
         kcode[port] &= ~key_CONT_A;
+#ifdef __WIIU__
+    {
+        bool fire = false;
+        if (wiiu_gun_v2 && touch_gun(port, &fire))
+        {
+            gun_src[port] = 2;
+            if (fire)
+                kcode[port] &= ~key_CONT_A;
+        }
+    }
+#endif
 
     // Off-screen reload trick — A button fires with gun_x/y set to off-screen
     // Some games (HotD2) use an off-screen shot to reload.
