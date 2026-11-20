@@ -2001,3 +2001,18 @@ void wiiu_gx2_shutdown()
     }
     WHBGfxShutdown();
 }
+
+// save states (wiiu/state_wiiu.cpp): a render-to-texture result still to be written back into VRAM lands before the
+// state is taken or loaded
+void wiiu_rtt_wait()
+{
+    for (int i = 0; i < 500 && *(WiiuFrame *volatile *)&pending_rtt; i++)
+        OSSleepTicks(OSMillisecondsToTicks(1));
+}
+void wiiu_textures_all_fresh();   // texture_gx2.cpp
+void wiiu_textures_after_load()
+{
+    OSFastMutex_Lock(&decode_lock);
+    wiiu_textures_all_fresh();
+    OSFastMutex_Unlock(&decode_lock);
+}

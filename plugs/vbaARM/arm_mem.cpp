@@ -236,3 +236,14 @@ template void WriteMemArm<1,u8>(u32 adr,u8 data);
 template void WriteMemArm<2,u16>(u32 adr,u16 data);
 template void WriteMemArm<4,u32>(u32 adr,u32 data);
 
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(arm7_mem)
+{
+    S(aica_interr);
+    S(e68k_out);
+    S(aica_reg_L);
+    S(e68k_reg_L);
+    S(e68k_reg_M);
+}
+#endif

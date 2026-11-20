@@ -346,3 +346,12 @@ void printtoc(TocInfo* toc,SessionInfo* ses)
 	}
 	printf("Session END: FAD END %d\n",ses->SessionsEndFAD);
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(gdrom_drive)
+{
+    S(NullDriveDiscType);
+    S(q_subchannel);
+}
+#endif

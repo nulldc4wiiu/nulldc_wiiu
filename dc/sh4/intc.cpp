@@ -438,3 +438,20 @@ void intc_Term()
 
 }
 
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+// the remapped pending/mask bits go with the priority tables that define their layout
+STATE_SECTION(sh4_intc)
+{
+    S(INTC_ICR);
+    S(INTC_IPRA);
+    S(INTC_IPRB);
+    S(INTC_IPRC);
+    S(interrupt_vpend);
+    S(interrupt_vmask);
+    S(decoded_srimask);
+    S(InterruptEnvId);
+    S(InterruptBit);
+    S(InterruptLevelBit);
+}
+#endif

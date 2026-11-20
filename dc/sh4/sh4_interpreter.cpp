@@ -445,3 +445,13 @@ void Get_Sh4Interpreter(sh4_if* rv)
 	rv->IsCpuRunning = Sh4_int_IsCpuRunning;
 	rv->ResetCache   = sh4_int_resetcache;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_timing)
+{
+    S(rtc_cycles);
+    S(update_cnt);
+    S(settings.dreamcast.RTC);
+}
+#endif

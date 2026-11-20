@@ -976,3 +976,11 @@ sh4op(gdrom_hle_op)
 	// printf instead of EMUERROR because tiny freeze otherwise
 	printf("GDROM HLE NOT SUPPORTED\n");
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_cpu)
+{
+    S(sh4_sleeping);
+}
+#endif

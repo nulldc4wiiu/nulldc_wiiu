@@ -65,6 +65,9 @@ static volatile emu_thread_rv_t emu_thread_rv = RV_WAIT;
 
 // Forward declarations
 static void ResetDC(bool manual);
+#ifdef __WIIU__
+bool wiiu_emu_after_run();   // wiiu/main_wiiu.cpp
+#endif
 static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd);
 
 /**
@@ -92,7 +95,14 @@ static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 			emu_thread_state = EMU_IDLE;
 			emu_thread_rv = RV_OK;
 			dc_running = true;
+#ifdef __WIIU__
+			// a save or load stops the CPU so its registers are flushed (wiiu/main_wiiu.cpp), then runs it again
+			do
+				sh4_cpu.Run();
+			while (wiiu_emu_after_run());
+#else
 			sh4_cpu.Run();
+#endif
 			dc_running = false;
 			break;
 

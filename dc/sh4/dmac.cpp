@@ -337,3 +337,15 @@ void dmac_Reset(bool Manual)
 void dmac_Term()
 {
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_dmac)
+{
+    S(DMAC_SAR);
+    S(DMAC_DAR);
+    S(DMAC_DMATCR);
+    S(DMAC_CHCR);
+    S(DMAC_DMAOR);
+}
+#endif

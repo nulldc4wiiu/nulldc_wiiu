@@ -504,3 +504,15 @@ void aica_sb_Init()
 
 void aica_sb_Reset(bool Manual) {}
 void aica_sb_Term()             {}
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(aica_if)
+{
+    S(VREG);
+    S(rtc_EN);
+    S(aica_dma_delay_cycles);
+    S(s_aica_dma_len);
+    SBUF(aica_ram.data, ARAM_SIZE);
+}
+#endif

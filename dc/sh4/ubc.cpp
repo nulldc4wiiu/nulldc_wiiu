@@ -103,3 +103,19 @@ void ubc_Term()
     // No dynamic resources to release — the UBC register bank is statically
     // allocated and the UBC[] map entries will be cleaned up by the caller.
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_ubc)
+{
+    S(UBC_BARA);
+    S(UBC_BAMRA);
+    S(UBC_BBRA);
+    S(UBC_BARB);
+    S(UBC_BAMRB);
+    S(UBC_BBRB);
+    S(UBC_BDRB);
+    S(UBC_BDMRB);
+    S(UBC_BRCR);
+}
+#endif

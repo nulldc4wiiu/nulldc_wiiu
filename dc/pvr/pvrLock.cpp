@@ -102,3 +102,11 @@ u32 vramlock_ConvOffset32toOffset64(u32 offset32)
 	
 	return addr_shifted | bank | lower;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(pvr_vram)
+{
+    SBUF(vram.data, VRAM_SIZE);
+}
+#endif

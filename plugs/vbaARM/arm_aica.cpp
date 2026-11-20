@@ -67,11 +67,13 @@ static int aica_clock_mhz     = 200;
 // rather than a fixed 32x loop, then run the ARM for this slice. The ARM and
 // AICA therefore stay in lockstep instead of being bulk-updated independently
 // (and AICA is no longer stepped from the video/audio frame).
+// the AICA sample clock's fraction and the ARM's batched cycles (function statics before; at file scope so save
+// states keep them: without them a loaded state's sound parts ways with the run that saved it)
+static u32 aica_cycle_acc = 0;
+static u32 arm_batch_acc = 0;     // SH4 cycles owed to the ARM (arm7_batch > 1)
+static u32 arm_batch_calls = 0;
 void FASTCALL armUpdateARM(u32 Cycles)
 {
-	static u32 aica_cycle_acc = 0;
-	static u32 arm_batch_acc = 0;     // SH4 cycles owed to the ARM (arm7_batch > 1)
-	static u32 arm_batch_calls = 0;
 
 	// Run the ARM7 for this slice (cycle budget scaled by arm_sh4_bias,
 	// further divided by the per-game arm7_speed preset stage). The clock reads
@@ -135,3 +137,13 @@ arm_deferred:
 		AicaTicks += ARM_PERF_TICKS() - t_aica;
 	}
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(arm7_clock)
+{
+	S(aica_cycle_acc);
+	S(arm_batch_acc);
+	S(arm_batch_calls);
+}
+#endif

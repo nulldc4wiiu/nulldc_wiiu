@@ -188,6 +188,10 @@ void wiiu_disc_stats();     // disc_cache_wiiu.cpp
 // exp_gx2_core: the emulator parks here, between frames, before the foreground is released, so GX2 can shut down
 // cleanly (with the emulator running flat out, HOME could hang otherwise)
 static volatile bool emu_pause_req, emu_paused;
+void wiiu_state_service();   // state_wiiu.cpp
+bool wiiu_state_op_pending();
+static volatile bool state_stop;   // the CPU stopped for a save or load (wiiu_emu_after_run)
+extern volatile bool sh4_int_bCpuRun;   // dc/sh4/sh4_interpreter.cpp
 // a disc swap from the HOME menu (home_menu_wiiu.cpp), done here on the emulator thread between frames: the lid opens
 // at once, and 1.5 s later the new disc goes in and the lid closes (the game sees Open, then Busy, then the disc)
 extern "C" void wiiu_disc_lid_open();                    // plugs/ImgReader/common.cpp
@@ -225,14 +229,41 @@ void wiiu_emu_safe_point()
     {
         emu_paused = true;
         while (emu_pause_req)
+        {
+            if (wiiu_state_op_pending())
+            {
+                // a save or load (state_wiiu.cpp): here the JIT still holds the SH-4 registers in host registers, so
+                // stop the CPU; the mainloop flushes them at the end of this timeslice and returns, and dc.cpp calls
+                // wiiu_emu_after_run, which does it and runs the CPU again. Stays "paused" meanwhile
+                state_stop = true;
+                sh4_int_bCpuRun = false;
+                break;
+            }
             OSSleepTicks(OSMillisecondsToTicks(2));
-        emu_paused = false;
+        }
+        if (!state_stop)
+            emu_paused = false;
     }
 }
 static int audio_buffer_ms;
 void wiiu_audio_tune(int buffer_ms);
 static bool picker = true;   // wiiu.cfg picker=0: no game picker even without file= (boots the BIOS)
 static volatile bool emu_running, exit_requested, exit_requested_by_core;
+// dc/dc.cpp, when sh4_cpu.Run() returns: true to run again (the CPU was stopped for a save or load, now done)
+bool wiiu_emu_after_run()
+{
+    if (!state_stop)
+        return false;
+    state_stop = false;
+    emu_paused = true;
+    do
+    {
+        wiiu_state_service();   // Sh4cntx is exact here: the registers were flushed
+        OSSleepTicks(OSMillisecondsToTicks(2));
+    } while (emu_pause_req && emu_running && !exit_requested);
+    emu_paused = false;
+    return emu_running;
+}
 static int home_relaunch;   // the HOME menu: 1 "Quit to the game list" (the app starts again, at the picker), 3 "Restart the game"
 
 // back to the Wii U Menu; ProcUI then reports the exit to the main loop
@@ -401,6 +432,8 @@ static void load_wiiu_cfg()
         else if (!strcmp(key, "home_script"))
             { extern int wiiu_home_script; wiiu_home_script = atoi(value); }   // test: which script drives the menu (1 settings, 2 restart, 3 game list)
 #endif
+        else if (!strcmp(key, "save_states"))
+            { extern int wiiu_save_states; wiiu_save_states = atoi(value); }   // the HOME menu's save state rows (state_wiiu.cpp)
         else if (!strcmp(key, "remote_pad"))
             { extern int wiiu_remote_pad; wiiu_remote_pad = atoi(value); }   // 0: a Wii Remote is no pad (remap_wiiu.cpp)
         else if (!strcmp(key, "fast_forward"))
@@ -418,6 +451,8 @@ static void load_wiiu_cfg()
         else if (!strcmp(key, "gun_cross"))
             wiiu_gun_cross = atoi(value);   // gun_v2's crosshairs (0: none)
 #ifdef WIIU_INSTRUMENT
+        else if (!strcmp(key, "state_trace"))
+            { extern int wiiu_state_trace; wiiu_state_trace = atoi(value); }   // test: state hashes after a save/load (state_wiiu.cpp)
         else if (!strcmp(key, "touch_test"))
             { extern int wiiu_touch_test_x, wiiu_touch_test_y, wiiu_touch_test_at;   // test: taps at x,y (GamePad pixels) every 3 s from s seconds
               sscanf(value, "%d,%d,%d", &wiiu_touch_test_x, &wiiu_touch_test_y, &wiiu_touch_test_at); }

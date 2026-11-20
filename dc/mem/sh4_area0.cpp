@@ -491,3 +491,11 @@ void map_area0(u32 base)
 	// 0x02|base mirrors 0x00|base (excludes Flash and Boot ROM per HW spec)
 	_vmem_mirror_mapping(0x02 | base, 0x00 | base, 0x02);
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(mem_area0)
+{
+    S(s_flash_state);
+}
+#endif

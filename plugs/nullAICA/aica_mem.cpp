@@ -135,3 +135,11 @@ void term_mem()
 {
     free(aica_reg);
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(aica_regs)
+{
+    SBUF(aica_reg, 0x8000);
+}
+#endif

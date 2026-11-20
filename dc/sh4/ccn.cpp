@@ -337,3 +337,24 @@ void ccn_Term()
 {
     // Nothing to release -- all storage is statically allocated
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_ccn)
+{
+    S(CCN_PTEH);
+    S(CCN_PTEL);
+    S(CCN_TTB);
+    S(CCN_TEA);
+    S(CCN_MMUCR);
+    S(CCN_BASRA);
+    S(CCN_BASRB);
+    S(CCN_CCR);
+    S(CCN_TRA);
+    S(CCN_EXPEVT);
+    S(CCN_INTEVT);
+    S(CCN_PTEA);
+    S(CCN_QACR0);
+    S(CCN_QACR1);
+}
+#endif

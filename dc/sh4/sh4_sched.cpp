@@ -124,3 +124,24 @@ void sh4_sched_cleanup()
 	sch_list.clear();
 	sched_now = 0;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+// the scheduler's clock and each entry's times (the callbacks and tags are set up at start, in the same order)
+STATE_SECTION(sh4_sched)
+{
+    S(sched_now);
+    u32 n = (u32)sch_list.size();
+    S(n);
+    if (n != sch_list.size())
+    {
+        s.ok = false;
+        return;
+    }
+    for (auto &e : sch_list)
+    {
+        S(e.start);
+        S(e.end);
+    }
+}
+#endif

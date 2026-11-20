@@ -533,3 +533,23 @@ u32  arm_GetReg(int n)            { return arm_Reg[n].I; }
 void arm_SetReg(int n, u32 value) { arm_Reg[n].I = value; }
 u32  arm_GetNextPC()             { return arm_ArmNextPC; }
 void arm_SetNextPC(u32 value)    { arm_ArmNextPC = value; }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(arm7)
+{
+    S(arm_Reg);
+    S(arm_ArmNextPC);
+    S(armMode);
+    S(Arm7Enabled);
+    S(armIrqEnable);
+    S(armFiqEnable);
+    S(N_FLAG);
+    S(Z_FLAG);
+    S(C_FLAG);
+    S(V_FLAG);
+    S(IE);
+    S(IF);
+    S(IME);
+}
+#endif

@@ -246,3 +246,13 @@ void maple_Term()
 {
 	
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(maple)
+{
+    S(maple_dma_pending);
+    S(maple_ddt_pending_reset);
+    S(gun_wait);
+}
+#endif

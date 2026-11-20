@@ -172,3 +172,11 @@ void Regs_Reset(bool Manual)
 	FB_BURSTCTRL        = 0x00090639;
 	PT_ALPHA_REF        = 0x000000FF;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(pvr_regs)
+{
+    S(regs);
+}
+#endif

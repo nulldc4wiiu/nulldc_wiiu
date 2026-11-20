@@ -627,3 +627,28 @@ void spg_Reset(bool Manual)
 
     CalculateSync();
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+// the video timing; the limiter starts a new schedule after a load (s_pace_deadline)
+STATE_SECTION(pvr_spg)
+{
+    S(spg_InVblank);
+    S(spg_ScanlineSh4CycleCounter);
+    S(spg_CurrentScanline);
+    S(spg_ScanlineCount);
+    S(spg_LineSh4Cycles);
+    S(spg_FrameSh4Cycles);
+    S(lightgun_line);
+    S(lightgun_hpos);
+    S(maple_int_pending);
+    S(render_end_pending_cycles);
+    S(render_isp_pending_cycles);
+    S(render_tsp_pending_cycles);
+    S(render_vd_pending_cycles);
+    S(s_list_irq_cycles);
+    S(s_list_irq_active);
+    if (s.loading)
+        s_pace_deadline = 0.0;
+}
+#endif

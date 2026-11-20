@@ -506,3 +506,21 @@ void pvr_Reset(bool Manual)
     }
     YUV_region_next = 0;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(pvr_yuv)
+{
+    S(YUV_tempdata);
+    S(YUV_index);
+    S(YUV_dest);
+    S(YUV_doneblocks);
+    S(YUV_blockcount);
+    S(YUV_x_curr);
+    S(YUV_y_curr);
+    S(YUV_x_size);
+    S(YUV_y_size);
+    S(YUV_regions);
+    S(YUV_region_next);
+}
+#endif

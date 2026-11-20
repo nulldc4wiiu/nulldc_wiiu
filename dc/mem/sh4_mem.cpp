@@ -377,3 +377,14 @@ u32 FASTCALL GetRamPageFromAddress(u32 RamAddress)
 	verify(IsOnRam(RamAddress));
 	return (RamAddress & RAM_MASK) / PAGE_SIZE;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+// main RAM and the system flash (the BIOS is a ROM). The flash isn't marked dirty: the file on the card stays as
+// it is until the game writes the flash again
+STATE_SECTION(mem_ram)
+{
+    SBUF(mem_b.data, RAM_SIZE);
+    SBUF(flash_b.data, FLASH_SIZE);
+}
+#endif

@@ -296,3 +296,30 @@ void bsc_Reset(bool /*Manual*/)
 void bsc_Term()
 {
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_bsc)
+{
+    S(BSC_BCR1);
+    S(BSC_BCR2);
+    S(BSC_WCR1);
+    S(BSC_WCR2);
+    S(BSC_WCR3);
+    S(BSC_MCR);
+    S(BSC_PCR);
+    S(BSC_RTCSR);
+    S(BSC_RTCNT);
+    S(BSC_RTCOR);
+    S(BSC_RFCR);
+    S(BSC_PCTRA);
+    S(BSC_PDTRA);
+    S(BSC_PCTRB);
+    S(BSC_PDTRB);
+    S(BSC_GPIOIC);
+    S(vreg_2);
+    S(mask_read);
+    S(mask_pull_up);
+    S(mask_write);
+}
+#endif

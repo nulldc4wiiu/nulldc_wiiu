@@ -1787,3 +1787,31 @@ void gdrom_reg_Reset(bool Manual)
 		s_gd_spinup_cycles = 0;
 }
 
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(gdrom)
+{
+    S(read_buff);
+    S(pio_buff);
+    S(cdda);
+    S(packet_cmd);
+    S(read_params);
+    S(ata_cmd);
+    S(gd_state);
+    S(gd_disk_type);
+    S(set_mode_offset);
+    S(DriveSel);
+    S(Error);
+    S(IntReason);
+    S(Features);
+    S(SecCount);
+    S(SecNumber);
+    S(GDStatus);
+    S(ByteCount);
+    S(s_gd_budget);
+    S(s_gd_bus_budget);
+    S(s_gd_spinup_cycles);
+    S(s_pio_pending);
+    S(s_cdda_pos_valid);
+}
+#endif

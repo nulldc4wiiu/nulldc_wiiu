@@ -545,3 +545,12 @@ GX2Sampler *wiiu_sampler(u32 tsp_full)
     TSP tsp; tsp.full = tsp_full;
     return &samplers[tsp.ClampU | (tsp.ClampV << 1) | (tsp.FlipU << 2) | (tsp.FlipV << 3) | ((tsp.FilterMode != 0) << 4) | ((tsp.FilterMode >= 2) << 5)];
 }
+
+// save states: a load rewrote VRAM, which the sampled checksums may not catch: every texture is checked in full and
+// decoded again at its next use (present_gx2.cpp calls this under decode_lock)
+void wiiu_textures_all_fresh()
+{
+    for (auto &e : cache)
+        if (e.valid)
+            e.fresh = true;
+}

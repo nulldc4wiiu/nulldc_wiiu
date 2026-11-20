@@ -828,3 +828,12 @@ void map_p4()
   // Area7 handler overlays the 0xFFxxxxxx region, overriding the P4 catch-all
 	map_area7(0xE0);
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_onchip)
+{
+    S(sq_both);
+    SBUF(OnChipRAM.data, 0x2000);
+}
+#endif

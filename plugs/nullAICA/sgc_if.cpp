@@ -1513,3 +1513,29 @@ void AICA_Sample()
 
     wii_WriteSample((s16)mixr, (s16)mixl);
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+// the channels saved whole: their step functions are addresses in this build (a state loads only into the build
+// that saved it); ccd and SA point into memory that may move between runs, so a load sets them again
+STATE_SECTION(aica_channels)
+{
+    S(ChannelEx::Chans);
+    S(ChannelEx::active_lo);
+    S(ChannelEx::active_hi);
+    S(cdda_sector);
+    S(cdda_index);
+    S(cdda_silent);
+}
+void sgc_state_after_load(u8 *ccd_base)
+{
+    for (int i = 0; i < 64; i++)
+    {
+        ChannelEx &c = ChannelEx::Chans[i];
+        c.ccd = (ChannelCommonData *)&ccd_base[i * 0x80];
+        if (c.SA)
+            c.SA = &aica_ram_l[c.SA_addr];   // a channel never keyed on has none
+    }
+    cdda_ring_r = cdda_ring_w;   // sectors prefetched for the old state
+}
+#endif

@@ -527,3 +527,31 @@ void libAICA_TimeStep()
     }
 #endif
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(aica_timers)
+{
+    for (auto &t : timers)
+    {
+        S(t.c_step);
+        S(t.m_step);
+    }
+}
+// save and load: the mixer thread done with everything queued (the emulator is stopped, so nothing new comes)
+void aica_state_drain()
+{
+    if (!aica_started)
+        return;
+    for (int i = 0; i < 1000 && (aica_done != aica_pending || ops_r != ops_w); i++)
+        OSSleepTicks(OSMillisecondsToTicks(1));
+}
+// after a load: the mixer's copy of the channel registers from the loaded ones, and the channels pointed at it
+void sgc_state_after_load(u8 *ccd_base);   // sgc_if.cpp
+void aica_state_after_load()
+{
+    if (aica_started)
+        memcpy(mixer_regs, aica_reg, sizeof(mixer_regs));
+    sgc_state_after_load(aica_started ? mixer_regs : aica_reg);
+}
+#endif

@@ -43,6 +43,12 @@ void wiiu_turbo_set(uint32_t m);
 std::string wiiu_turbo_string(uint32_t m);
 uint32_t wiiu_turbo_fn_bit(int f);
 extern int wiiu_stick_dpad_swap;
+// save states (state_wiiu.cpp)
+extern int wiiu_save_states;
+const char *wiiu_state_run(int op, int slot);
+std::string wiiu_state_slot_info(int slot);
+bool wiiu_state_can_undo();
+const char *wiiu_state_status();
 void wiiu_menu_draw(uint32_t *px, const char *title, const char *const *rows, int n, int sel, const char *help);   // picker_wiiu.cpp
 void wiiu_menu_size(uint32_t *w, uint32_t *h);
 void wiiu_gx2_show_menu(const uint32_t *px, uint32_t w, uint32_t h);               // present_gx2.cpp
@@ -114,12 +120,19 @@ static uint32_t read_menu_buttons()
                                       { 220, MB_DOWN, "DOWN" }, { 260, MB_ACCEPT, "A" }, { 300, MB_UP, "UP" },
                                       { 320, MB_UP, "UP" }, { 340, MB_UP, "UP" }, { 380, MB_ACCEPT, "A" },
                                       { 420, MB_BACK, "B" }, { 460, MB_BACK, "B" } };
+        // 8: save states on: DOWN, A (the page, on "Save"), A (save slot 1; a used slot takes another A), A, then
+        // B, B (leave if it failed)
+        static const Step ssave[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_ACCEPT, "A" },
+                                      { 280, MB_ACCEPT, "A" }, { 340, MB_BACK, "B" }, { 380, MB_BACK, "B" } };
+        // 9: DOWN, A (the page), DOWN, A (load slot 1), then B, B
+        static const Step sload[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 220, MB_DOWN, "DOWN" },
+                                      { 260, MB_ACCEPT, "A" }, { 320, MB_BACK, "B" }, { 360, MB_BACK, "B" } };
         static const Step quick[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_ACCEPT, "A" },
                                       { 300, MB_BACK, "B" } };
 #define STEPS(a) a, (int)(sizeof(a) / sizeof(a[0]))
         struct Script { const Step *s; int n; };
         const Script sc = wiiu_home_script == 2 ? Script{ STEPS(restart) } : wiiu_home_script == 3 ? Script{ STEPS(picker) }
-                        : wiiu_home_script == 5 ? Script{ STEPS(disc) } : wiiu_home_script == 6 ? Script{ STEPS(quick) } : wiiu_home_script == 7 ? Script{ STEPS(remap) }
+                        : wiiu_home_script == 5 ? Script{ STEPS(disc) } : wiiu_home_script == 6 ? Script{ STEPS(quick) } : wiiu_home_script == 7 ? Script{ STEPS(remap) } : wiiu_home_script == 8 ? Script{ STEPS(ssave) } : wiiu_home_script == 9 ? Script{ STEPS(sload) }
                         : Script{ STEPS(settings) };
 #undef STEPS
         const Step *script = sc.s;
@@ -475,12 +488,77 @@ static void remap_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *
                    wiiu_remap_string(0).c_str(), wiiu_remap_string(1).c_str());
             continue;
         }
-        printf("[home] remap: %s\n", (r <= n + 3 ? rows[r] : ""));
+        if (r >= 1 && r <= n)
+            printf("[home] remap: %s %s is now %s\n", ctl ? "Classic/Pro" : "GamePad", wiiu_remap_phys_label(r - 1),
+                   wiiu_remap_fn_label(wiiu_remap_get(ctl, r - 1)));
+        else
+            printf("[home] remap: row %d\n", r);
+    }
+}
+
+// save states: a slot (1-4) and what to do with it; saving over a used slot takes a second A. Returns true when the
+// menu should close (a load, to see the game)
+static bool states_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *home)
+{
+    static int slot = 1;
+    int sel = 1;
+    bool confirm = false;
+    std::string msg;
+    for (;;)
+    {
+        const std::string info = wiiu_state_slot_info(slot);
+        const bool used = info != "empty";
+        std::vector<std::string> lines = {
+            "Slot:  " + std::to_string(slot) + "  (" + info + ")",
+            confirm ? "Save: A again to save over " + info : std::string("Save to this slot"),
+            "Load from this slot",
+            wiiu_state_can_undo() ? "Undo the last load" : "Undo the last load (nothing to undo)" };
+        std::vector<const char *> rows;
+        for (const auto &l : lines)
+            rows.push_back(l.c_str());
+        const std::string status = wiiu_state_status();
+        const std::string help = !msg.empty() ? msg
+            : "A on Slot picks the next one. Saving takes a moment and writes to the SD card while you play; loading "
+              "puts the game back as it was. Undo goes back to just before the last load." +
+              (status.empty() ? std::string() : "  Last save: " + status);
+        const int r = run_page(px, w, h, (int)rows.size(), sel, [&](uint32_t *p, int s) {
+            wiiu_menu_draw(p, "Save states", rows.data(), (int)rows.size(), s, help.c_str());
+        }, home);
+        if (r < 0)
+            return false;
+        sel = r;
+        msg.clear();
+        if (r != 1)
+            confirm = false;
+        if (r == 0)
+            slot = slot % 4 + 1;
+        else if (r == 1)
+        {
+            if (used && !confirm)
+            {
+                confirm = true;
+                continue;
+            }
+            confirm = false;
+            const char *e = wiiu_state_run(1, slot);
+            msg = e ? e : "Saved to slot " + std::to_string(slot) + " (writing to the SD card).";
+            printf("[home] save slot %d: %s\n", slot, e ? e : "ok");
+            if (!e)
+                return true;   // back to the game; the writer finishes meanwhile
+        }
+        else if (r == 2 || r == 3)
+        {
+            const char *e = wiiu_state_run(r == 2 ? 2 : 3, slot);
+            printf("[home] %s slot %d: %s\n", r == 2 ? "load" : "undo", slot, e ? e : "ok");
+            if (!e)
+                return true;
+            msg = e;
+        }
     }
 }
 
 // the menu: returns what the main loop should do (1 the game list, 2 the Wii U Menu, 3 restart the game)
-enum { ROW_RESUME, ROW_DISC, ROW_QUICK, ROW_REMAP, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
+enum { ROW_RESUME, ROW_STATES, ROW_DISC, ROW_QUICK, ROW_REMAP, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
 static int run_menu()
 {
     struct Row { int id; const char *label, *help; };
@@ -495,6 +573,8 @@ static int run_menu()
         { ROW_RESTART, "Restart the game", "Starts this game again from the Dreamcast's boot, as if switched off and on." },
         { ROW_PICKER, "Quit to the game list", "Stops the game and goes back to the list of games." },
         { ROW_QUIT, "Quit to the Wii U Menu", "Stops the game and goes back to the Wii U Menu." } };
+    if (wiiu_save_states)
+        rows.insert(rows.begin() + 1, { ROW_STATES, "Save states", "Save the game as it is now to one of 4 slots, or load one." });
     const auto set = disc_set(selectedFilePath);
     std::string disc_label;
     if (set.size() > 1)
@@ -528,6 +608,12 @@ static int run_menu()
             settings_page(px, w, h, id == ROW_GAME_SETTINGS, &home);
             if (home)
                 break;   // HOME leaves the menu from any page
+            continue;
+        }
+        if (id == ROW_STATES)
+        {
+            if (states_page(px, w, h, &home) || home)
+                break;
             continue;
         }
         if (id == ROW_REMAP)

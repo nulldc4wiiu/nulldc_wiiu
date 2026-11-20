@@ -167,3 +167,20 @@ void scif_Term()
 {
 	// Nothing to clean up -- no resources are allocated by scif_Init().
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_scif)
+{
+    S(SCIF_SCSMR2);
+    S(SCIF_SCBRR2);
+    S(SCIF_SCSCR2);
+    S(SCIF_SCFTDR2);
+    S(SCIF_SCFSR2);
+    S(SCIF_SCFRDR2);
+    S(SCIF_SCFCR2);
+    S(SCIF_SCFDR2);
+    S(SCIF_SCSPTR2);
+    S(SCIF_SCLSR2);
+}
+#endif

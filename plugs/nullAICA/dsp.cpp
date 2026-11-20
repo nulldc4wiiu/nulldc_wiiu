@@ -47,3 +47,11 @@ void dsp_writenmem(u32 addr)
     if (addr >= 0x400 && addr < 0xC00)
         dsp.dyndirty = true;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(aica_dsp)
+{
+    S(dsp);
+}
+#endif

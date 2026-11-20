@@ -130,3 +130,13 @@ void MMU_Term()
 {
 	// Nothing to free (all storage is statically allocated).
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_mmu)
+{
+    S(UTLB);
+    S(ITLB);
+    S(sq_remap);
+}
+#endif

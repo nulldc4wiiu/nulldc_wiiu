@@ -174,3 +174,11 @@ char szExDT[8][32] =
 	"Mode2-Non-XA",
 	"-> GD UNKNOWN TYPE <="
 };
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(gdrom_mode)
+{
+    S(gd_data_0x11);
+}
+#endif

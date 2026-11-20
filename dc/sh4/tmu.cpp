@@ -243,3 +243,19 @@ void tmu_Term()
 {
 	// Nothing to release; all state is statically allocated.
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_tmu)
+{
+    S(tmu_regs_CNT);
+    S(tmu_regs_COR);
+    S(tmu_regs_CR);
+    S(TMU_TOCR);
+    S(TMU_TSTR);
+    S(tmu_prescaler);
+    S(tmu_prescaler_shift);
+    S(tmu_prescaler_mask);
+    S(tmu_old_mode);
+}
+#endif

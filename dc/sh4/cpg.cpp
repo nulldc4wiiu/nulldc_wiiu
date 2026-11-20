@@ -66,3 +66,15 @@ void cpg_Term()
 {
     // Nothing to clean up; registers are statically allocated
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_cpg)
+{
+    S(CPG_FRQCR);
+    S(CPG_STBCR);
+    S(CPG_WTCNT);
+    S(CPG_WTCSR);
+    S(CPG_STBCR2);
+}
+#endif

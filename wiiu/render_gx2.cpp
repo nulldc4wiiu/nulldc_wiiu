@@ -526,6 +526,12 @@ void VBlank()
     wiiu_vblanks++;
     wiiu_fb_capture();
     wiiu_emu_safe_point();
+#ifdef WIIU_INSTRUMENT
+    {
+        void wiiu_state_trace_vblank();   // state_wiiu.cpp: state_trace=N
+        wiiu_state_trace_vblank();
+    }
+#endif
 }
 // ta_keyed (on): a render draws the list in the parameter buffer it renders (PARAM_BASE), not all the TA input
 // since the previous render. DOA2 double-buffers its lists and, in the doppelganger intro and the cut scene after
@@ -987,3 +993,18 @@ void wiiu_ta_decode(WiiuFrame *f)
 void SetFpsText(char *text) {}
 void SetFbScale(float x, float y) { fb_scale_x = x; fb_scale_y = y; }
 void strip_dedup_dump(double tdiff) {}
+
+// save states (wiiu/state_wiiu.cpp), emulator thread with the CPU stopped: after a load the TA input collected for
+// the old state goes, and the next ListInit/StartRender builds from the loaded registers (one frame may be lost)
+void wiiu_render_after_load()
+{
+    parked = nullptr;
+    frame_clear(build);
+    build->nv = build->ns = build->n_mv_tris = build->n_mp = 0;
+    build->max_invw = 0.0f;
+    g_ta_fast.nvert = g_ta_fast.nstrip = 0;
+    scan_reset();
+    ta_cursor();
+    list_init_since_render = false;
+    wiiu_sq_masks();
+}

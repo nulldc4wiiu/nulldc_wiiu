@@ -191,3 +191,12 @@ u32 Sh4Context::offset(u32 sh4_reg)
 
 	return offs;
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+// save states: the SH-4 registers (flushed: the CPU is stopped, wiiu/main_wiiu.cpp wiiu_emu_after_run)
+STATE_SECTION(sh4_regs)
+{
+    S(Sh4cntx);
+}
+#endif

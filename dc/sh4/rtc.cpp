@@ -188,3 +188,26 @@ void rtc_Tick()
                        (((year / 10)  % 10) << 4) |
                        (year % 10));
 }
+
+#ifdef __WIIU__
+#include "wiiu/state_wiiu.h"
+STATE_SECTION(sh4_rtc)
+{
+    S(RTC_R64CNT);
+    S(RTC_RSECCNT);
+    S(RTC_RMINCNT);
+    S(RTC_RHRCNT);
+    S(RTC_RWKCNT);
+    S(RTC_RDAYCNT);
+    S(RTC_RMONCNT);
+    S(RTC_RYRCNT);
+    S(RTC_RSECAR);
+    S(RTC_RMINAR);
+    S(RTC_RHRAR);
+    S(RTC_RWKAR);
+    S(RTC_RDAYAR);
+    S(RTC_RMONAR);
+    S(RTC_RCR1);
+    S(RTC_RCR2);
+}
+#endif
