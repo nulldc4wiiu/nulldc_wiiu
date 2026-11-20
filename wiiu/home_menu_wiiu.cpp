@@ -65,6 +65,7 @@ const char *wiiu_option_key(int i);
 const char *wiiu_option_label(int i);
 const char *wiiu_option_help(int i);
 int wiiu_option_values(int i);
+bool wiiu_option_transient(int i);   // this run only (Force gun on): the game list's options page, not these pages
 const char *wiiu_option_value_name(int i, int v);
 int wiiu_option_value(int i);
 std::string wiiu_game_name(const char *path);
@@ -244,7 +245,13 @@ static int run_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, int n, in
 static void settings_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool game, bool *home)
 {
     const std::string path = game ? wiiu_game_settings_path(selectedFilePath) : wiiu_config_path();
-    const int n = game ? 4 : wiiu_option_count();   // WIIU_GAME_OPTIONS in picker_wiiu.cpp
+    // the options shown: the ones a game can have (WIIU_GAME_OPTIONS in picker_wiiu.cpp) or all, without the
+    // this-run-only ones, which these saved pages couldn't keep
+    std::vector<int> ids;
+    for (int i = 0; i < (game ? 4 : wiiu_option_count()); i++)
+        if (!wiiu_option_transient(i))
+            ids.push_back(i);
+    const int n = (int)ids.size();
     const std::string title = game ? "Settings for " + wiiu_game_name(selectedFilePath) : std::string("Settings for all games");
     int sel = 0;
     for (;;)
@@ -259,17 +266,19 @@ static void settings_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, boo
                 return "";   // as all games
             return wiiu_option_value_name(i, wiiu_option_value(i));
         };
-        for (int i = 0; i < n; i++)
+        for (int k = 0; k < n; k++)
         {
+            const int i = ids[k];
             const std::string v = value_of(i);
-            lines[i] = std::string(wiiu_option_label(i)) + ":  " + (v.empty() ? std::string("as all games (") + wiiu_option_value_name(i, wiiu_option_value(i)) + ")" : v);
-            rows[i] = lines[i].c_str();
+            lines[k] = std::string(wiiu_option_label(i)) + ":  " + (v.empty() ? std::string("as all games (") + wiiu_option_value_name(i, wiiu_option_value(i)) + ")" : v);
+            rows[k] = lines[k].c_str();
         }
-        const int r = run_page(px, w, h, n, sel, [&](uint32_t *p, int s) {
-            wiiu_menu_draw(p, title.c_str(), rows.data(), n, s, wiiu_option_help(s));
+        const int picked = run_page(px, w, h, n, sel, [&](uint32_t *p, int s) {
+            wiiu_menu_draw(p, title.c_str(), rows.data(), n, s, wiiu_option_help(ids[s]));
         }, home);
-        if (r < 0)
+        if (picked < 0)
             return;
+        const int r = ids[picked];
         // step the value: this game cycles "as all games" -> each value -> back; all games cycles the values
         const std::string cur = value_of(r);
         const int nv = wiiu_option_values(r);

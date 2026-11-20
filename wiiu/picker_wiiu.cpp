@@ -213,9 +213,10 @@ const picker_option options[] = {
     { "fastmem", "Fast memory",
       "Dreamcast memory mapped straight into the Wii U's: about 12% faster in 3D games. Turn it off if a game "
       "crashes.", on_off, 2, 0 },
-    { "lightgun", "Light gun",
-      "For light-gun games only: the Wii Remote's pointer aims, B shoots, A reloads, - is Start. It replaces "
-      "every controller, so other games need it off.", off_on, 2, 0 },
+    { "lightgun", "Force gun on",
+      "Light-gun games (House of the Dead 2, ...) turn the gun on by themselves; this forces it on for one that "
+      "isn't recognised. For this run only, never saved: the Wii Remote's pointer aims, B shoots, A reloads.",
+      off_on, 2, 0, 1 },
     { "render", "3D resolution",
       "640x480 is the Dreamcast's own: half the GPU work, so heavy 3D games (Soulcalibur) show more frames, a "
       "little softer.", sizes, 2, 0 },
@@ -380,6 +381,7 @@ const char *wiiu_option_help(int i) { return options[i].help; }
 int wiiu_option_values(int i) { return options[i].n_values; }
 const char *wiiu_option_value_name(int i, int v) { return options[i].values[v]; }
 int wiiu_option_value(int i) { return picker_core_option(i); }
+bool wiiu_option_transient(int i) { return options[i].transient != 0; }
 // the value index of `value` for option i, -1 if it isn't one of its values
 static int option_index(int i, const char *value)
 {
@@ -463,6 +465,8 @@ void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *r
     // the game's own settings, over config.txt's
     for (int i = 0; i < WIIU_GAME_OPTIONS && selectedFilePath[0]; i++)
     {
+        if (options[i].transient)
+            continue;   // Force gun on: this run only, not a game setting
         const std::string v = wiiu_settings_get(wiiu_game_settings_path(selectedFilePath), options[i].key);
         const int idx = v.empty() ? -1 : option_index(i, v.c_str());
         if (idx >= 0)

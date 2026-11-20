@@ -39,6 +39,7 @@ typedef struct {
     const char *help;           /* one line about it, shown under the list, or NULL */
     const char *const *values;  /* e.g. {"on", "off"} */
     int n_values, def;
+    int transient;              /* 1: never saved, nor read from config.txt: def at every start, for this run only */
 } picker_option;
 
 typedef struct {

@@ -133,7 +133,7 @@ void picker_core_init(const picker_cfg *cfg)
     {
         int i, v;
         for (i = 0; i < cfg->n_options && i < MAX_OPTIONS; i++) {
-            const char *set = picker_core_config(cfg->options[i].key);
+            const char *set = cfg->options[i].transient ? NULL : picker_core_config(cfg->options[i].key);
             g_opt[i] = cfg->options[i].def;
             for (v = 0; set && v < cfg->options[i].n_values; v++)
                 if (!strcasecmp(set, cfg->options[i].values[v]))
@@ -159,7 +159,10 @@ static void save_option(int i)
     int found = 0;
     const picker_option *o = &g_cfg->options[i];
     const size_t klen = strlen(o->key);
-    FILE *f = fopen(g_config_path, "r");
+    FILE *f;
+    if (o->transient)
+        return;   /* this run only */
+    f = fopen(g_config_path, "r");
     text[0] = 0;
     if (f) {
         while (fgets(line, sizeof(line), f) && n + strlen(line) + 64 < sizeof(text)) {
