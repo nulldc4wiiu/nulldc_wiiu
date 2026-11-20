@@ -675,13 +675,10 @@ void wiiu_home_menu_acquired()
 }
 
 // once a frame on the GX2 thread while a game runs: 0 nothing, else HOME_MENU_PICKER or HOME_MENU_QUIT
-// once a frame on the GX2 thread, while a game runs (main_wiiu.cpp): fast-forward and the small labels over the game
+// once a frame on the GX2 thread, while a game runs (main_wiiu.cpp): the fast-forward label over the game (the
+// controls are on the game list's help page, not shown at a game's start)
 void wiiu_overlay_tick()
 {
-    const OSTime now = OSGetSystemTime();
-    static OSTime started;
-    if (!started)
-        started = now;
     const bool ff = wiiu_fast_forward && (ffwd_latched || wiiu_ffwd_held());
     const int active = ff ? (wiiu_ffwd == 2 || wiiu_ffwd == 3 ? wiiu_ffwd : 99) : 0;
     if (active != wiiu_ffwd_active)
@@ -694,13 +691,6 @@ void wiiu_overlay_tick()
     std::string want;
     if (active)
         want = active == 99 ? ">> Fast-forward" : active == 2 ? ">> Fast-forward 2x" : ">> Fast-forward 3x";
-    else if ((owns_home || wiiu_fast_forward) && now - started < OSSecondsToTicks(6))
-    {
-        // the start hint, once per run
-        want = owns_home ? "HOME: nullDC menu   HOME held: Wii U menu" : "";
-        if (wiiu_fast_forward)
-            want += want.empty() ? "- held: fast-forward" : "   - held: fast-forward";
-    }
     if (want == label_now)
         return;
     label_now = want;
