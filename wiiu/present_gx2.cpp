@@ -50,7 +50,11 @@ extern OSTime texture_decode_ticks;
 extern u32 wiiu_vblanks, wiiu_renders, wiiu_dropped_vertices, wiiu_dropped_strips, wiiu_dropped_mv_tris;
 
 static const u32 FB_MAX_W = 640, FB_MAX_H = 480;
-static u32 shared_rgba[FB_MAX_W * FB_MAX_H];
+// the 2D framebuffer picture, double-buffered: the converter thread fills fb_rgba[fb_back] without the lock and
+// publishes it (shared_rgba) under shared_lock, so the GX2 thread never waits for a conversion
+static u32 fb_rgba[2][FB_MAX_W * FB_MAX_H];
+static u32 *shared_rgba = fb_rgba[0];
+static int fb_back = 1;
 static u32 shared_w, shared_h;
 static volatile u32 shared_seq;
 static OSFastMutex shared_lock;
@@ -122,6 +126,10 @@ void wiiu_fb_capture()
     }
 }
 
+#ifdef WIIU_INSTRUMENT
+static volatile u64 fb_conv_ticks;   // convert_fb's time and count, for the perf report
+static volatile u32 fb_conv_n;
+#endif
 // worker: the snapshotted framebuffer into shared_rgba
 static void convert_fb(void *)
 {
@@ -144,11 +152,45 @@ static void convert_fb(void *)
                r.interlace, r.line_double, r.pixel_double, cw, ch);
     }
 
-    OSFastMutex_Lock(&shared_lock);
+    u32 *const dst = fb_rgba[fb_back];   // not shown: written without the lock
+#ifdef WIIU_INSTRUMENT
+    const OSTime conv_t0 = OSGetSystemTime();
+#endif
     for (u32 y = 0; y < ch; y++)
     {
         const u32 line = ((r.interlace && (y & 1) ? r.sof2 : r.sof1) & 0x00FFFFFF) + y / ys * stride;
-        u32 *out = &shared_rgba[y * FB_MAX_W];
+        u32 *out = &dst[y * FB_MAX_W];
+        if (bpp != 3)
+        {
+            // a 32-bit word at a time (the start address and the stride are word-aligned): VRAM keeps each word in
+            // host order, so it reads as the little-endian value, two RGB555/565 pixels (the first in the low half)
+            // or one RGB0888. A pixel at a time took ~30 ms a frame on the console (the 2D path: pause screens,
+            // logos, FMV)
+            const u32 src_w = (cw + xs - 1) / xs;
+            u32 x = 0;
+            for (u32 sx = 0; sx < src_w; sx += bpp == 2 ? 2 : 1)
+            {
+                const u32 word = *(const u32 *)&vram[vram_offset64(line + sx * bpp)];
+                u32 px[2];
+                u32 n = 1;
+                if (bpp == 4)
+                    px[0] = (word << 8) | 0xFF;
+                else
+                {
+                    n = sx + 1 < src_w ? 2 : 1;
+                    for (u32 k = 0; k < 2; k++)
+                    {
+                        const u32 p = k ? word >> 16 : word & 0xFFFF;
+                        px[k] = depth == 1 ? rgba((p >> 11) << 3, ((p >> 5) & 0x3F) << 2, (p & 0x1F) << 3)
+                                           : rgba(((p >> 10) & 0x1F) << 3, ((p >> 5) & 0x1F) << 3, (p & 0x1F) << 3);
+                    }
+                }
+                for (u32 k = 0; k < n; k++)
+                    for (u32 d = 0; d < xs && x < cw; d++)
+                        out[x++] = px[k];
+            }
+            continue;
+        }
         for (u32 x = 0; x < cw; x++)
         {
             u32 a = line + x / xs * bpp;
@@ -170,9 +212,16 @@ static void convert_fb(void *)
     // the whole texture is shown: blank what this picture doesn't cover, not the last one's leftovers
     for (u32 y = 0; y < FB_MAX_H; y++)
         if (y >= ch)
-            memset(&shared_rgba[y * FB_MAX_W], 0, FB_MAX_W * 4);
+            memset(&dst[y * FB_MAX_W], 0, FB_MAX_W * 4);
         else if (cw < FB_MAX_W)
-            memset(&shared_rgba[y * FB_MAX_W + cw], 0, (FB_MAX_W - cw) * 4);
+            memset(&dst[y * FB_MAX_W + cw], 0, (FB_MAX_W - cw) * 4);
+#ifdef WIIU_INSTRUMENT
+    fb_conv_ticks = fb_conv_ticks + (OSGetSystemTime() - conv_t0);
+    fb_conv_n = fb_conv_n + 1;
+#endif
+    OSFastMutex_Lock(&shared_lock);
+    shared_rgba = dst;
+    fb_back ^= 1;
     shared_w = cw;
     shared_h = ch;
     shared_seq = shared_seq + 1;
@@ -303,6 +352,7 @@ static u32 strip_idx_owner;              // which index buffer strip_idx[] descr
 static u32 strip_idx_count;              // indices convert_frame wrote there: draws never reach past them
 static bool init_rtt_target();
 static void start_worker();
+static void start_fb_thread();
 static void start_intake();
 static void start_conv_helper();
 static void init_white_texture();
@@ -597,6 +647,7 @@ bool wiiu_gx2_init()
     init_white_texture();
     wiiu_sampler(0);   // the sampler table, built here before two threads look samplers up
     start_worker();
+    start_fb_thread();
     start_intake();
     start_conv_helper();
 
@@ -640,7 +691,8 @@ static void convert_frame(const WiiuFrame *f, struct GpuVertex *out, u32 *idx, f
 static void log_frame(const WiiuFrame *f, u32 frames_taken);
 
 // ---- worker core ---------------------------------------------------------------------------------------
-// The worker (core 2) converts the scanned-out framebuffer for the 2D path (convert_fb), off the GX2 thread.
+// The worker (core 2) runs jobs the GX2 thread waits for; the 2D path's framebuffer conversion has its own thread
+// on core 0 (fb_thread, below), which the GX2 thread doesn't wait for.
 static OSThread worker;
 static OSEvent worker_go, worker_done;
 static void (*worker_job)(void *);
@@ -655,6 +707,39 @@ static int worker_main(int, const char **)
         OSSignalEvent(&worker_done);
     }
     return 0;
+}
+
+// the 2D framebuffer converter (convert_fb) on its own thread on core 0 (core 2 holds the GX2, intake, sound and
+// worker threads): the GX2 thread starts a conversion and shows the last finished picture meanwhile
+static OSThread fb_thread;
+static OSEvent fb_go;
+static volatile bool fb_busy;
+static int fb_main(int, const char **)
+{
+    for (;;)
+    {
+        OSWaitEvent(&fb_go);
+        convert_fb(nullptr);
+        fb_busy = false;
+    }
+    return 0;
+}
+static void start_fb_thread()
+{
+    static u8 stack[64 * 1024] __attribute__((aligned(16)));
+    OSInitEvent(&fb_go, FALSE, OS_EVENT_MODE_AUTO);
+    const u32 core = OSGetCodegenCore() == 0 ? 2 : 0;
+    if (OSCreateThread(&fb_thread, fb_main, 0, nullptr, stack + sizeof(stack), sizeof(stack), 16,
+                       core == 0 ? OS_THREAD_ATTRIB_AFFINITY_CPU0 : OS_THREAD_ATTRIB_AFFINITY_CPU2))
+    {
+        OSSetThreadName(&fb_thread, "nullDC framebuffer");
+        OSResumeThread(&fb_thread);
+    }
+}
+static void fb_wait()
+{
+    for (int i = 0; i < 200 && fb_busy; i++)
+        OSSleepTicks(OSMillisecondsToTicks(1));
 }
 
 static void start_worker()
@@ -1813,6 +1898,13 @@ static void perf_report()
            ms_per_s(perf.draw), ms_per_s(texture_decode_ticks), ms_per_s(perf.present), ms_per_s(perf.finish), draw_strips,
            draw_calls, run_breaks[0], run_breaks[1], run_breaks[2], run_breaks[3], run_breaks[4], run_breaks[5],
            run_breaks[6], run_breaks[7], run_breaks[8], run_breaks[9], ms_per_s(perf.flip));
+#ifdef WIIU_INSTRUMENT
+    if (fb_conv_n)
+        printf("[gx2] 2D framebuffer: %u converted, %.2f ms each\n", fb_conv_n,
+               (float)OSTicksToMicroseconds(fb_conv_ticks) / 1000.0f / fb_conv_n);
+    fb_conv_ticks = 0;
+    fb_conv_n = 0;
+#endif
     draw_strips = draw_calls = 0;
     memset(run_breaks, 0, sizeof(run_breaks));
     perf = {};
@@ -1876,8 +1968,12 @@ void wiiu_gx2_frame()
     static u32 converted_seq;
     if (!show_3d && fb_regs_seq != converted_seq)
     {
-        converted_seq = fb_regs_seq;   // a new vblank's snapshot (the emulator may be slower than the display)
-        on_worker(convert_fb, nullptr);
+        if (!fb_busy)
+        {
+            converted_seq = fb_regs_seq;   // a new vblank's snapshot (the emulator may be slower than the display)
+            fb_busy = true;
+            OSSignalEvent(&fb_go);   // converts on core 0; the picture shows from the next frame it's done by
+        }
     }
     if (!show_3d && shared_seq != drawn_seq)
     {
@@ -1989,6 +2085,7 @@ void wiiu_gx2_shutdown()
     if (!gx2_ready || wiiu_gfx_down)
         return;
     gx2_ready = false;
+    fb_wait();   // a conversion in flight still reads the snapshot
     GX2RDestroySurfaceEx(&tex.surface, (GX2RResourceFlags)0);
     GX2RDestroyBufferEx(&pos_buf, (GX2RResourceFlags)0);
     GX2RDestroyBufferEx(&uv_buf, (GX2RResourceFlags)0);
