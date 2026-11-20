@@ -260,6 +260,8 @@ static void stop_emulator(OSThread *thread)
     printf("[wiiu] stopping the emulator\n");
     void wiiu_disc_quiesce();
     wiiu_disc_quiesce();
+    void wiiu_rumble_stop();
+    wiiu_rumble_stop();   // no motor left running past the game
     if (sh4_cpu.Stop)
         sh4_cpu.Stop();
     for (int i = 0; i < 30 && emu_running; i++)
@@ -333,6 +335,7 @@ int os_msgbox(const wchar *text, unsigned int type)
 
 extern "C" void wiiu_input_state(u32 *drc, u32 *wpad4);   // ogc_compat.cpp
 extern "C" int wiiu_gun_v2, wiiu_gun_cross;                // drkMapleLightGun.cpp
+extern "C" int wiiu_rumble;                                 // rumble_wiiu.cpp
 
 extern "C" void WiiExitToLoader(void)
 {
@@ -397,6 +400,12 @@ static void load_wiiu_cfg()
             { extern int wiiu_home_test; wiiu_home_test = atoi(value); }   // test: a HOME press N s in, the menu driven (home_menu_wiiu.cpp)
         else if (!strcmp(key, "home_script"))
             { extern int wiiu_home_script; wiiu_home_script = atoi(value); }   // test: which script drives the menu (1 settings, 2 restart, 3 game list)
+#endif
+        else if (!strcmp(key, "rumble"))
+            wiiu_rumble = atoi(value);   // a Puru Puru Pack in each controller's second slot, on the motors (rumble_wiiu.cpp)
+#ifdef WIIU_INSTRUMENT
+        else if (!strcmp(key, "rumble_test"))
+            { extern int wiiu_rumble_test; wiiu_rumble_test = atoi(value); }   // test: player 1's pack on for 1 s at s seconds
 #endif
         else if (!strcmp(key, "gun_v2"))
             wiiu_gun_v2 = atoi(value);   // touch gun, two guns, auto by game (drkMapleLightGun.cpp)
@@ -512,8 +521,11 @@ void wiiu_emu_pause(bool pause)
 void wiiu_home_menu_start();
 void wiiu_home_menu_acquired();
 int wiiu_home_menu_tick();
+void wiiu_rumble_tick(uint32_t frame);   // rumble_wiiu.cpp
+void wiiu_rumble_stop();
 static uint32_t gfx_release(void *)
 {
+    wiiu_rumble_stop();
     emu_pause_req = true;
     for (int i = 0; i < 500 && !emu_paused && emu_running; i++)
         OSSleepTicks(OSMillisecondsToTicks(1));
@@ -777,6 +789,8 @@ static int app_main()
             wiiu_gx2_frame();   // waits for VSync
         else
             OSSleepTicks(OSMillisecondsToTicks(100));
+        if (emu_running && !done)
+            wiiu_rumble_tick(wiiu_vblanks);
         if (video && !done && emu_running)
             if (const int a = wiiu_home_menu_tick())
             {

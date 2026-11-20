@@ -9,6 +9,7 @@ enum MapleDeviceType
 	MDT_Maracas,        // Samba de Amigo maracas       (drkMapleMaracas.cpp)
 	MDT_Keyboard,       // DC keyboard / Typing of Dead (drkMapleKeyboard.cpp)
 	MDT_FishingRod,     // Sega Bass Fishing rod         (drkMapleFishingRod.cpp)
+	MDT_PurupuruPack,   // Puru Puru Pack (rumble), in a controller's second slot (rumble=1)
 
 	MDT_Count
 };

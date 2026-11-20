@@ -174,6 +174,9 @@ extern "C" int get_player_count();
 //   2 Wiimotes per player total are required in maracas mode (up to 8 for
 //   4-player mode).
 // ----------------------------------------------------------------------------
+// rumble=1 (wiiu/rumble_wiiu.cpp): a Puru Puru Pack in each standard controller's second slot instead of a VMU
+extern "C" int wiiu_rumble;
+
 void mcfg_CreateDevices()
 {
 	MapleDeviceType ctrlType = mcfg_GetControllerDeviceType();
@@ -194,7 +197,7 @@ void mcfg_CreateDevices()
 	if (isStandard)
 	{
 		mcfg_Create(MDT_SegaVMU, 0, 0);  // VMU slot A1
-		mcfg_Create(MDT_SegaVMU, 0, 1);  // VMU slot A2
+		mcfg_Create(wiiu_rumble ? MDT_PurupuruPack : MDT_SegaVMU, 0, 1);  // VMU slot A2, or the rumble pack
 	}
 
 	// --- Buses 1-3 : Players 2-4 (when 2/3/4-player mode is active) ---
@@ -205,7 +208,7 @@ void mcfg_CreateDevices()
 		if (isStandard)
 		{
 			mcfg_Create(MDT_SegaVMU, bus, 0);
-			mcfg_Create(MDT_SegaVMU, bus, 1);
+			mcfg_Create(wiiu_rumble ? MDT_PurupuruPack : MDT_SegaVMU, bus, 1);
 		}
 	}
 }

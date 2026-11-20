@@ -32,6 +32,7 @@ static uint32_t core_buttons(uint32_t h)
 
 static bool want_dpd[4];
 static uint32_t dpd_reads[4], dpd_valid[4];
+static bool is_pro[4];   // the channel's controller is a Pro Controller (it has a motor the player holds)
 void wiiu_kpad_read(int chan, WiiuPad *pad)
 {
     KPADStatus st;
@@ -51,10 +52,14 @@ void wiiu_kpad_read(int chan, WiiuPad *pad)
     if (KPADReadEx((KPADChan)chan, &st, 1, &err) < 1)
     {
         if (err != KPAD_ERROR_NO_SAMPLES)
+        {
             *pad = {};   // gone
+            is_pro[chan & 3] = false;
+        }
         return;
     }
     *pad = {};
+    is_pro[chan & 3] = false;
     pad->connected = true;
     if (st.posValid > 0)
     {
@@ -84,6 +89,7 @@ void wiiu_kpad_read(int chan, WiiuPad *pad)
         break;
     case WPAD_EXT_PRO_CONTROLLER:
         // reported as a Classic Controller, whose buttons it shares bit for bit
+        is_pro[chan & 3] = true;
         pad->ext = 2;
         pad->exp = st.pro.hold & 0xFFFF;
         pad->lx = st.pro.leftStick.x;
@@ -107,4 +113,13 @@ void wiiu_kpad_pointer(int chan, bool on)
     }
     else
         KPADDisableDPD((KPADChan)chan);
+}
+
+void wiiu_kpad_motor(int chan, bool on)
+{
+    static bool running[4];
+    if (chan < 0 || chan > 3 || (on && !is_pro[chan]) || running[chan] == on)
+        return;
+    WPADControlMotor((WPADChan)chan, on);
+    running[chan] = on;
 }

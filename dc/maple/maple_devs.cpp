@@ -12,6 +12,7 @@ const char* maple_sega_mouse_name = "Emulated Dreamcast Mouse";
 const char* maple_sega_dreameye_name_1 = "Dreamcast Camera Flash  Devic";
 const char* maple_sega_dreameye_name_2 = "Dreamcast Camera Flash LDevic";
 const char* maple_sega_mic_name = "MicDevice for Dreameye";
+const char* maple_sega_purupuru_name = "Puru Puru Pack";
 
 const char* maple_sega_brand = "Produced By or Under License From SEGA ENTERPRISES,LTD.";
 
@@ -972,6 +973,104 @@ struct maple_fishing_rod : maple_base
 };
 
 // ============================================================================
+// Puru Puru Pack: the rumble pack, as Flycast's maple_sega_purupuru (core/hw/maple/maple_devs.cpp). The game sets
+// a vibration (power, frequency, a ramp) and an auto-stop time; wiiu/rumble_wiiu.cpp turns that into the bus's
+// player's motors for the computed time. The ramp ("inclination") isn't played: the motors are on or off
+// ============================================================================
+extern "C" void wiiu_rumble_set(int bus, float power, u32 ms);   // wiiu/rumble_wiiu.cpp
+struct maple_sega_purupuru : maple_base
+{
+	u16 AST = 19, AST_ms = 5000;
+	u32 VIBSET = 0;
+
+	u32 dma(u32 cmd)
+	{
+		static int logged;
+		if (cmd != MDC_DeviceRequest && logged++ < 12)
+			printf("[rumble] pack %s: command %u\n", logical_port, cmd);   // the game uses the pack
+		switch (cmd)
+		{
+		case MDC_DeviceRequest:
+		case MDC_AllStatusReq:
+			w32(MFID_8_Vibration);
+			w32(0x00000101);
+			w32(0);
+			w32(0);
+			w8(0xFF);   // area code
+			w8(0);      // direction
+			wstr(maple_sega_purupuru_name, 30);
+			wstr(maple_sega_brand, 60);
+			w16(0x00C8);   // 20 mA standby
+			w16(0x0640);   // 160 mA max
+			if (cmd == MDC_AllStatusReq)
+			{
+				const char *extra = "Version 1.000,1998/11/10,315-6211-AH   ,Vibration Motor:1,Fm:4 - 30Hz,Pow:7     ";
+				wptr(extra, strlen(extra));
+				return MDRS_DeviceStatusAll;
+			}
+			return MDRS_DeviceStatus;
+
+		case MDCF_GetCondition:
+			w32(MFID_8_Vibration);
+			w32(VIBSET);
+			return MDRS_DataTransfer;
+
+		case MDCF_GetMediaInfo:
+			w32(MFID_8_Vibration);
+			w32(0x3B07E010);   // the pack's vibration specs
+			return MDRS_DataTransfer;
+
+		case MDCF_BlockRead:
+			w32(MFID_8_Vibration);
+			w32(0);
+			w16(2);
+			w16(AST);
+			return MDRS_DataTransfer;
+
+		case MDCF_BlockWrite:
+			{
+				// the auto-stop time: byte 10 of the little-endian message, bits 16-23 of the third word here
+				r32();
+				r32();
+				const u32 d = r32();
+				AST = (d >> 16) & 0xFF;
+				AST_ms = AST * 250 + 250;
+			}
+			return MDRS_DeviceReply;
+
+		case MDCF_SetCondition:
+			{
+				r32();   // the function
+				VIBSET = r32();
+				const int pos = (VIBSET >> 8) & 7, neg = (VIBSET >> 12) & 7, freq = (VIBSET >> 16) & 0xFF;
+				int inc = (VIBSET >> 24) & 0xFF;
+				if (VIBSET & 0x8000)
+					inc = -inc;              // INH: ramping down
+				else if (!(VIBSET & 0x0800))
+					inc = 0;                 // no EXH: no ramp
+				const bool cnt = VIBSET & 1;
+				const float power = pos + neg >= 7 ? 1.0f : (pos + neg) / 7.0f;
+				u32 ms = AST_ms;
+				if (freq > 0 && (!cnt || inc))
+				{
+					const int big = pos > neg ? pos : neg;
+					const int t = 1000 * (inc ? (inc < 0 ? -inc : inc) * big : 1) / freq;
+					ms = t < (int)AST_ms ? (u32)t : AST_ms;
+				}
+				wiiu_rumble_set(bus_id, power, ms);
+			}
+			return MDRS_DeviceReply;
+
+		case MDC_DeviceReset:
+		case MDC_DeviceKill:
+			return MDRS_DeviceReply;
+
+		default:
+			return MDRE_UnknownCmd;
+		}
+	}
+};
+
 maple_device* maple_Create(MapleDeviceType type)
 {
 	maple_device* rv=0;
@@ -999,6 +1098,10 @@ maple_device* maple_Create(MapleDeviceType type)
 
 	case MDT_FishingRod:
 		rv = new maple_fishing_rod();
+		break;
+
+	case MDT_PurupuruPack:
+		rv = new maple_sega_purupuru();
 		break;
 
 	default:

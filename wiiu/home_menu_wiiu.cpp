@@ -29,7 +29,8 @@ void wiiu_gx2_hide_ui();
 void wiiu_gx2_frame();
 void wiiu_emu_pause(bool pause);                                     // main_wiiu.cpp
 extern char selectedFilePath[512];
-void wiiu_disc_swap_request(const char *path);   // main_wiiu.cpp: done on the emulator thread
+void wiiu_disc_swap_request(const char *path);
+void wiiu_rumble_stop();                          // rumble_wiiu.cpp   // main_wiiu.cpp: done on the emulator thread
 // settings (picker_wiiu.cpp)
 int wiiu_option_count();
 const char *wiiu_option_key(int i);
@@ -325,6 +326,7 @@ static int run_menu()
     std::vector<uint32_t> px(w * h);
     printf("[home] menu open\n");
     wiiu_emu_pause(true);
+    wiiu_rumble_stop();
     int sel = 0, result = ROW_RESUME;
     for (;;)
     {

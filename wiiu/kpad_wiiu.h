@@ -20,3 +20,5 @@ void wiiu_kpad_init();
 void wiiu_kpad_read(int chan, WiiuPad *pad);
 // the pointer (KPAD's "DPD"), for the light gun
 void wiiu_kpad_pointer(int chan, bool on);
+// the motor of a channel's Pro Controller (Remotes and Classic Controllers: nothing; rumble_wiiu.cpp)
+void wiiu_kpad_motor(int chan, bool on);
