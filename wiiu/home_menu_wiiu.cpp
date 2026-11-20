@@ -23,6 +23,7 @@
 
 extern "C" bool wiiu_home_held();                                   // ogc_compat.cpp
 extern "C" bool wiiu_ffwd_held();
+extern "C" bool wiiu_quit_combo_held();
 extern "C" bool wiiu_corner_tapped();
 extern "C" int get_controller_type(void);                           // 1: the light gun
 extern "C" int wiiu_gun_cross;                                      // drkMapleLightGun.cpp
@@ -679,7 +680,22 @@ void wiiu_home_menu_acquired()
 // controls are on the game list's help page, not shown at a game's start)
 void wiiu_overlay_tick()
 {
-    const bool ff = wiiu_fast_forward && (ffwd_latched || wiiu_ffwd_held());
+    // − held alone for a quarter second: a − pressed just before + (the quit combo, held a second) doesn't
+    // fast-forward meanwhile, nor does a − still held after the combo until it's released
+    static OSTime minus_since;
+    static bool combo_seen;
+    const OSTime now = OSGetSystemTime();
+    const bool minus_alone = wiiu_ffwd_held(), minus_any = minus_alone || wiiu_quit_combo_held();
+    if (wiiu_quit_combo_held())
+        combo_seen = true;
+    else if (!minus_any)
+        combo_seen = false;
+    if (!minus_alone || combo_seen)
+        minus_since = 0;
+    else if (!minus_since)
+        minus_since = now;
+    const bool minus_held = minus_since && now - minus_since >= OSMillisecondsToTicks(250);
+    const bool ff = wiiu_fast_forward && (ffwd_latched || minus_held);
     const int active = ff ? (wiiu_ffwd == 2 || wiiu_ffwd == 3 ? wiiu_ffwd : 99) : 0;
     if (active != wiiu_ffwd_active)
     {

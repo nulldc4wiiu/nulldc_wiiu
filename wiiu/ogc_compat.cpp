@@ -227,6 +227,17 @@ extern "C" bool wiiu_ffwd_held()
             return true;
     return false;
 }
+// + and − held together on the GamePad, a Classic or a Pro Controller: the quit combo (fast-forward stays off)
+extern "C" bool wiiu_quit_combo_held()
+{
+    const u32 both = WIIDRC_BUTTON_MINUS | WIIDRC_BUTTON_PLUS;
+    if ((drc_buttons & both) == both)
+        return true;
+    for (int c = 0; c < 4; c++)
+        if ((wpad_held[c] & (0x1400u << 16)) == (0x1400u << 16))   // Classic/Pro − and +
+            return true;
+    return false;
+}
 // a tap in the GamePad's top right corner (80x80 of its 854x480): opens the HOME menu, outside gun games
 extern "C" bool wiiu_corner_tapped()
 {
