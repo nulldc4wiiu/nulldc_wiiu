@@ -10,7 +10,7 @@
 #include <vpad/input.h>
 #include "kpad_wiiu.h"
 
-extern "C" { int wiiu_rumble; }
+extern "C" { int wiiu_rumble = 1; }   // rumble=0: no Puru Puru Pack (the second VMU slot as before)
 int wiiu_rumble_motors = 1;   // the HOME menu's quick settings: 0 keeps the motors off (the pack still answers the game)
 #ifdef WIIU_INSTRUMENT
 int wiiu_rumble_test;   // rumble_test=s: player 1's pack at full power for 1 s at s seconds (test runs)

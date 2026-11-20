@@ -25,7 +25,7 @@ extern "C" int get_controller_type(void);
 extern "C" int get_player_count(void);
 extern "C" int wiiu_rumble;
 
-int wiiu_save_states;   // save_states=1: the HOME menu's save and load rows
+int wiiu_save_states = 1;   // the HOME menu's save and load rows (on by default; save_states=0 hides them)
 static void trace_start();
 
 static StateSection *sections;

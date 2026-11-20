@@ -96,7 +96,7 @@ extern "C" int get_player_count(void);
 // Wii Remote points at the screen, else gun 2; both sensor bars are powered; a crosshair for each Remote gun (not for
 // touch, where the finger is the aim). gun_cross=0 hides the crosshairs
 extern "C" bool WiiDRC_Touch(u16 *x, u16 *y);   // wiiu/ogc_compat.cpp
-extern "C" { int wiiu_gun_v2, wiiu_gun_cross = 1; }
+extern "C" { int wiiu_gun_v2 = 1, wiiu_gun_cross = 1; }   // gun_v2=0: the old gun (Remote only, no auto by game)
 static int gun_src[MAX_LG_PLAYERS];               // what aimed each gun this frame: 0 nothing, 1 a Remote, 2 touch
 static u32 remote_seen[MAX_LG_PLAYERS];           // frames since a Remote last pointed at the screen, per port
 static int touch_fire;                            // polls the touch shot stays down (a tap is shorter than a poll)

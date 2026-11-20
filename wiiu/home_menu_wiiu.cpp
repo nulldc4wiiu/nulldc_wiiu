@@ -75,12 +75,12 @@ std::string wiiu_settings_get(const std::string &path, const char *key);
 bool wiiu_settings_set(const std::string &path, const char *key, const char *value);
 bool wiiu_app_running();
 
-int wiiu_home_menu;   // home_menu=1: this menu owns HOME (off: HOME opens the Wii U's HOME Menu, as before)
-// fast_forward=1 (phase 6, off until confirmed on a console): − held alone on the GamePad, a Classic or a Pro
+int wiiu_home_menu = 1;   // this menu owns HOME (on by default; home_menu=0: HOME opens the Wii U's HOME Menu, as before)
+// fast_forward (on by default; fast_forward=0 turns it off): − held alone on the GamePad, a Classic or a Pro
 // Controller runs the game at ffwd times (2 or 3; 0 as fast as it goes), with the sound off and a label on screen;
 // the quick settings page can latch it on. wiiu_ffwd_active is what SPG.cpp (the limiter) and audio_wiiu.cpp read:
 // 0 normal speed, 2 or 3, 99 unlimited
-int wiiu_fast_forward, wiiu_ffwd = 2;
+int wiiu_fast_forward = 1, wiiu_ffwd = 2;
 extern "C" { volatile int wiiu_ffwd_active; }
 static bool ffwd_latched;
 static std::string label_now;   // the label on screen ("" none); the menu's own overlay resets it
