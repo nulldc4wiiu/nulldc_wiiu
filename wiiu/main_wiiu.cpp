@@ -401,6 +401,10 @@ static void load_wiiu_cfg()
         else if (!strcmp(key, "home_script"))
             { extern int wiiu_home_script; wiiu_home_script = atoi(value); }   // test: which script drives the menu (1 settings, 2 restart, 3 game list)
 #endif
+        else if (!strcmp(key, "fast_forward"))
+            { extern int wiiu_fast_forward; wiiu_fast_forward = atoi(value); }   // - held: fast-forward (home_menu_wiiu.cpp)
+        else if (!strcmp(key, "ffwd"))
+            { extern int wiiu_ffwd; wiiu_ffwd = atoi(value); }   // fast-forward's speed: 2, 3, 0 as fast as it goes
         else if (!strcmp(key, "rumble"))
             wiiu_rumble = atoi(value);   // a Puru Puru Pack in each controller's second slot, on the motors (rumble_wiiu.cpp)
 #ifdef WIIU_INSTRUMENT
@@ -522,6 +526,7 @@ void wiiu_home_menu_start();
 void wiiu_home_menu_acquired();
 int wiiu_home_menu_tick();
 void wiiu_rumble_tick(uint32_t frame);   // rumble_wiiu.cpp
+void wiiu_overlay_tick();               // home_menu_wiiu.cpp: fast-forward and the labels
 void wiiu_rumble_stop();
 static uint32_t gfx_release(void *)
 {
@@ -790,7 +795,11 @@ static int app_main()
         else
             OSSleepTicks(OSMillisecondsToTicks(100));
         if (emu_running && !done)
+        {
             wiiu_rumble_tick(wiiu_vblanks);
+            if (video)
+                wiiu_overlay_tick();
+        }
         if (video && !done && emu_running)
             if (const int a = wiiu_home_menu_tick())
             {

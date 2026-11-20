@@ -12,6 +12,9 @@
 
 // Game-preset controlled toggle (see wii/game_presets.h, wii/main.cpp).
 extern "C" int get_speed_limiter_preset();
+#ifdef __WIIU__
+extern "C" volatile int wiiu_ffwd_active;   // wiiu/home_menu_wiiu.cpp: fast-forward (0 off, 2, 3, 99 unlimited)
+#endif
 #define SPEED_LIMITER() (get_speed_limiter_preset() != 0)
 
 // PVR X-scaler preset (see wii/game_presets.h, wii/main.cpp).
@@ -257,7 +260,16 @@ static void spg_PaceFrame()
     // so the target stays the real video period (1/60 NTSC etc.) regardless of
     // the sh4_clock underclock preset — underclocking must not change the
     // refresh rate we pace to.
-    const double period = (double)spg_FrameSh4Cycles / (double)SH4_CLOCK_EFF;
+    double period = (double)spg_FrameSh4Cycles / (double)SH4_CLOCK_EFF;
+#ifdef __WIIU__
+    // fast-forward (wiiu/home_menu_wiiu.cpp): the frame period divided by the speed (a new schedule starts below,
+    // as for a video mode change), or no limiter at all for "as fast as it goes"
+    const int ffwd = wiiu_ffwd_active;
+    if (ffwd == 2 || ffwd == 3)
+        period /= ffwd;
+#else
+    const int ffwd = 0;
+#endif
 
     // First vblank, or the video mode changed under us (NTSC<->PAL, interlace,
     // VGA): the old deadline is on the wrong cadence. Start a fresh schedule
@@ -279,7 +291,7 @@ static void spg_PaceFrame()
     // runs as fast as the host CPU allows; light frames push speed past 100%.
     // Sleeping only the surplus never penalizes a frame that is already at or
     // below real speed.
-    if (err < 0.0 && SPEED_LIMITER())
+    if (err < 0.0 && SPEED_LIMITER() && ffwd != 99)
     {
         usleep((useconds_t)(-err * 1000000.0));
         now = os_GetSeconds();

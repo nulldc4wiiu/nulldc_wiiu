@@ -216,6 +216,22 @@ extern "C" bool wiiu_home_held()
             return true;
     return false;
 }
+// fast-forward (home_menu_wiiu.cpp): − held alone on the GamePad, a Classic or a Pro Controller (with + it's quit; a
+// Wii Remote's own − is Start for the light gun, so it doesn't count)
+extern "C" bool wiiu_ffwd_held()
+{
+    if ((drc_buttons & WIIDRC_BUTTON_MINUS) && !(drc_buttons & WIIDRC_BUTTON_PLUS))
+        return true;
+    for (int c = 0; c < 4; c++)
+        if ((wpad_held[c] & (0x1000u << 16)) && !(wpad_held[c] & (0x0400u << 16)))   // Classic/Pro − without +
+            return true;
+    return false;
+}
+// a tap in the GamePad's top right corner (80x80 of its 854x480): opens the HOME menu, outside gun games
+extern "C" bool wiiu_corner_tapped()
+{
+    return drc_touch && drc_tx >= 854 - 80 && drc_ty < 80;
+}
 extern "C" void wiiu_input_state(u32 *drc, u32 *wpad4)
 {
     *drc = drc_buttons;

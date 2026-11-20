@@ -269,6 +269,23 @@ void wiiu_menu_draw(u32 *px, const char *title, const char *const *rows, int n, 
         text_wrapped(px, MARGIN, H / FONT_LINE - 4, help, DIM);
 }
 void wiiu_menu_size(u32 *w, u32 *h) { *w = W; *h = H; }
+// a small label in the top left over the running game (fast-forward, the start hint): transparent but for a dark
+// box behind the text
+void wiiu_label_draw(u32 *px, const char *s)
+{
+    for (u32 i = 0; i < W * H; i++)
+        px[i] = 0;
+    u32 width = 0;
+    for (const char *c = s; *c; c++)
+        if (*c >= 32 && *c < 127)
+            width += font_glyphs[*c - 32].advance;
+    const u32 x0 = MARGIN - 10, x1 = MARGIN + width + 10 < W ? MARGIN + width + 10 : W, y0 = FONT_LINE - 6,
+              y1 = 2 * FONT_LINE + 6;
+    for (u32 y = y0; y < y1 && y < H; y++)
+        for (u32 x = x0; x < x1; x++)
+            px[y * W + x] = 0x000000B0;
+    text(px, MARGIN, 1, s, FG);
+}
 
 
 static void setup(const char *home)

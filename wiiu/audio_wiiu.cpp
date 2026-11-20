@@ -217,8 +217,11 @@ static inline void request_start()
         start_voices();
 }
 
+extern "C" volatile int wiiu_ffwd_active;   // home_menu_wiiu.cpp
 static void write_block()
 {
+    if (wiiu_ffwd_active)   // fast-forward: the sound off (the block is dropped)
+        return;
     if (!playing && queued() >= START_QUEUED)
         request_start();   // a stall stops the voices with the ring full, and nothing below would restart them
     if (queued() + BLOCK > MAX_QUEUED)

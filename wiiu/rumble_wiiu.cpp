@@ -11,6 +11,7 @@
 #include "kpad_wiiu.h"
 
 extern "C" { int wiiu_rumble; }
+int wiiu_rumble_motors = 1;   // the HOME menu's quick settings: 0 keeps the motors off (the pack still answers the game)
 #ifdef WIIU_INSTRUMENT
 int wiiu_rumble_test;   // rumble_test=s: player 1's pack at full power for 1 s at s seconds (test runs)
 #endif
@@ -66,14 +67,18 @@ void wiiu_rumble_tick(uint32_t frame)
     if (!wiiu_rumble)
         return;
 #ifdef WIIU_INSTRUMENT
-    if (wiiu_rumble_test && frame == (uint32_t)wiiu_rumble_test * 60)
+    static bool tested;
+    if (wiiu_rumble_test && !tested && frame >= (uint32_t)wiiu_rumble_test * 60)
+    {
+        tested = true;   // once: the main loop doesn't see every vblank count
         wiiu_rumble_set(0, 1.0f, 1000);
+    }
 #endif
     const OSTime now = OSGetSystemTime();
     for (int p = 0; p < 4; p++)
     {
         Player &pl = players[p];
-        const float want = (int64_t)(pl.until - now) > 0 ? pl.power : 0.0f;
+        const float want = wiiu_rumble_motors && (int64_t)(pl.until - now) > 0 ? pl.power : 0.0f;
         if (want != pl.playing || (want > 0.0f && (int64_t)(now - pl.renew) > 0))
         {
             if (want != pl.playing && p == 0 && changes <= 40)

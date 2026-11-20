@@ -22,6 +22,13 @@
 #include <stdint.h>
 
 extern "C" bool wiiu_home_held();                                   // ogc_compat.cpp
+extern "C" bool wiiu_ffwd_held();
+extern "C" bool wiiu_corner_tapped();
+extern "C" int get_controller_type(void);                           // 1: the light gun
+extern "C" int wiiu_gun_cross;                                      // drkMapleLightGun.cpp
+extern "C" int wiiu_rumble;
+extern int wiiu_rumble_motors;                                      // rumble_wiiu.cpp
+void wiiu_label_draw(uint32_t *px, const char *s);                  // picker_wiiu.cpp
 void wiiu_menu_draw(uint32_t *px, const char *title, const char *const *rows, int n, int sel, const char *help);   // picker_wiiu.cpp
 void wiiu_menu_size(uint32_t *w, uint32_t *h);
 void wiiu_gx2_show_menu(const uint32_t *px, uint32_t w, uint32_t h);               // present_gx2.cpp
@@ -29,8 +36,8 @@ void wiiu_gx2_hide_ui();
 void wiiu_gx2_frame();
 void wiiu_emu_pause(bool pause);                                     // main_wiiu.cpp
 extern char selectedFilePath[512];
-void wiiu_disc_swap_request(const char *path);
-void wiiu_rumble_stop();                          // rumble_wiiu.cpp   // main_wiiu.cpp: done on the emulator thread
+void wiiu_disc_swap_request(const char *path);    // main_wiiu.cpp: done on the emulator thread
+void wiiu_rumble_stop();                          // rumble_wiiu.cpp
 // settings (picker_wiiu.cpp)
 int wiiu_option_count();
 const char *wiiu_option_key(int i);
@@ -46,7 +53,15 @@ std::string wiiu_settings_get(const std::string &path, const char *key);
 bool wiiu_settings_set(const std::string &path, const char *key, const char *value);
 bool wiiu_app_running();
 
-int wiiu_home_menu;                 // home_menu=1: this menu owns HOME (off: HOME opens the Wii U's HOME Menu, as before)
+int wiiu_home_menu;   // home_menu=1: this menu owns HOME (off: HOME opens the Wii U's HOME Menu, as before)
+// fast_forward=1 (phase 6, off until confirmed on a console): − held alone on the GamePad, a Classic or a Pro
+// Controller runs the game at ffwd times (2 or 3; 0 as fast as it goes), with the sound off and a label on screen;
+// the quick settings page can latch it on. wiiu_ffwd_active is what SPG.cpp (the limiter) and audio_wiiu.cpp read:
+// 0 normal speed, 2 or 3, 99 unlimited
+int wiiu_fast_forward, wiiu_ffwd = 2;
+extern "C" { volatile int wiiu_ffwd_active; }
+static bool ffwd_latched;
+static std::string label_now;   // the label on screen ("" none); the menu's own overlay resets it
 static bool owns_home, hbm_open;
 #ifdef WIIU_INSTRUMENT
 // home_test=N (test setting, Cemu has no HOME to press): N s into the game a short HOME press opens the menu, then
@@ -66,22 +81,30 @@ static uint32_t read_menu_buttons()
 #ifdef WIIU_INSTRUMENT
     if (test_frame >= 0)
     {
-        // DOWN to "Settings for this game", A into it, A steps the first option, B back, B to the game
+        // scripted buttons from the menu's opening (row 1 is "Quick settings" outside disc sets)
         struct Step { int frame; uint32_t button; const char *name; };
-        // home_script=1: settings (DOWN, A, A steps fast memory, B, B); 2: DOWN x3, A (restart the game);
-        // 3: DOWN x4, A (quit to the game list); 4: HOME held for a second instead of pressed
-        static const Step settings[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_ACCEPT, "A" },
-                                         { 300, MB_BACK, "B" }, { 360, MB_BACK, "B" } };
-        static const Step restart[] = { { 120, MB_DOWN, "DOWN" }, { 150, MB_DOWN, "DOWN" }, { 180, MB_DOWN, "DOWN" },
-                                        { 240, MB_ACCEPT, "A" } };
-        static const Step picker[] = { { 120, MB_DOWN, "DOWN" }, { 150, MB_DOWN, "DOWN" }, { 180, MB_DOWN, "DOWN" },
-                                       { 210, MB_DOWN, "DOWN" }, { 270, MB_ACCEPT, "A" } };
-        // 5: a disc set: DOWN to "Change disc", A, DOWN to the next disc, A (the swap)
+        // home_script=1: settings (DOWN x2, A, A steps fast memory, B, B); 2: DOWN x4, A (restart the game);
+        // 3: DOWN x5, A (quit to the game list); 4: HOME held for a second instead of pressed;
+        // 5: a disc set: DOWN to "Change disc", A, DOWN to the next disc, A (the swap);
+        // 6: DOWN, A (quick settings), A (fast-forward latched on: back to the menu), B (resume)
+        static const Step settings[] = { { 120, MB_DOWN, "DOWN" }, { 150, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" },
+                                         { 240, MB_ACCEPT, "A" }, { 300, MB_BACK, "B" }, { 360, MB_BACK, "B" } };
+        static const Step restart[] = { { 120, MB_DOWN, "DOWN" }, { 140, MB_DOWN, "DOWN" }, { 160, MB_DOWN, "DOWN" },
+                                        { 180, MB_DOWN, "DOWN" }, { 240, MB_ACCEPT, "A" } };
+        static const Step picker[] = { { 120, MB_DOWN, "DOWN" }, { 140, MB_DOWN, "DOWN" }, { 160, MB_DOWN, "DOWN" },
+                                       { 180, MB_DOWN, "DOWN" }, { 200, MB_DOWN, "DOWN" }, { 270, MB_ACCEPT, "A" } };
         static const Step disc[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_DOWN, "DOWN" },
                                      { 300, MB_ACCEPT, "A" } };
-        const Step *script = wiiu_home_script == 2 ? restart : wiiu_home_script == 3 ? picker
-                           : wiiu_home_script == 5 ? disc : settings;
-        const int steps = wiiu_home_script == 2 ? 4 : wiiu_home_script == 3 ? 5 : wiiu_home_script == 5 ? 4 : 5;
+        static const Step quick[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_ACCEPT, "A" },
+                                      { 300, MB_BACK, "B" } };
+#define STEPS(a) a, (int)(sizeof(a) / sizeof(a[0]))
+        struct Script { const Step *s; int n; };
+        const Script sc = wiiu_home_script == 2 ? Script{ STEPS(restart) } : wiiu_home_script == 3 ? Script{ STEPS(picker) }
+                        : wiiu_home_script == 5 ? Script{ STEPS(disc) } : wiiu_home_script == 6 ? Script{ STEPS(quick) }
+                        : Script{ STEPS(settings) };
+#undef STEPS
+        const Step *script = sc.s;
+        const int steps = sc.n;
         test_frame++;
         for (int k = 0; k < steps; k++)
         {
@@ -293,13 +316,74 @@ static bool disc_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *h
     return true;
 }
 
+// quick settings: what applies at once, for the rest of this run (the settings pages keep settings for later starts)
+static void quick_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *home)
+{
+    int sel = 0;
+    for (;;)
+    {
+        const char *speed = wiiu_ffwd == 2 ? "2x" : wiiu_ffwd == 3 ? "3x" : "as fast as it goes";
+        std::vector<std::string> lines;
+        std::vector<int> ids;
+        if (wiiu_fast_forward)
+        {
+            lines.push_back(std::string("Fast-forward:  ") + (ffwd_latched ? "on" : "off (- held: on while held)"));
+            ids.push_back(0);
+            lines.push_back(std::string("Fast-forward speed:  ") + speed);
+            ids.push_back(1);
+        }
+        if (get_controller_type() == 1)
+        {
+            lines.push_back(std::string("Gun crosshairs:  ") + (wiiu_gun_cross ? "on" : "off"));
+            ids.push_back(2);
+        }
+        if (wiiu_rumble)
+        {
+            lines.push_back(std::string("Rumble:  ") + (wiiu_rumble_motors ? "on" : "off"));
+            ids.push_back(3);
+        }
+        if (lines.empty())
+        {
+            lines.push_back("Nothing here with these settings (fast_forward, rumble, the light gun)");
+            ids.push_back(-1);
+        }
+        std::vector<const char *> rows;
+        for (const auto &l : lines)
+            rows.push_back(l.c_str());
+        static const char *const help[] = {
+            "On: the game runs fast until switched off here. Holding - on the GamePad or a Classic or Pro Controller "
+            "does the same while held. The sound is off meanwhile.",
+            "How fast fast-forward runs. Dreamcast games mostly can't go far past 2x on the Wii U.",
+            "The light gun's aim marks for the Wii Remotes (red gun 1, blue gun 2). Touch aims show none.",
+            "The motors of the GamePad and the Pro Controllers, for games that use the Puru Puru (Jump) Pack." };
+        const int r = run_page(px, w, h, (int)rows.size(), sel, [&](uint32_t *p, int s) {
+            wiiu_menu_draw(p, "Quick settings (for this run)", rows.data(), (int)rows.size(), s,
+                           ids[s] >= 0 ? help[ids[s]] : "B: back.");
+        }, home);
+        if (r < 0 || ids[r] < 0)
+            return;
+        sel = r;
+        switch (ids[r])
+        {
+        case 0: ffwd_latched = !ffwd_latched; break;
+        case 1: wiiu_ffwd = wiiu_ffwd == 2 ? 3 : wiiu_ffwd == 3 ? 0 : 2; break;
+        case 2: wiiu_gun_cross = !wiiu_gun_cross; break;
+        case 3: wiiu_rumble_motors = !wiiu_rumble_motors; break;
+        }
+        printf("[home] quick: %s\n", lines[r].c_str());
+        if (ids[r] == 0)
+            return;   // fast-forward on or off: back to the menu to resume and see it
+    }
+}
+
 // the menu: returns what the main loop should do (1 the game list, 2 the Wii U Menu, 3 restart the game)
-enum { ROW_RESUME, ROW_DISC, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
+enum { ROW_RESUME, ROW_DISC, ROW_QUICK, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
 static int run_menu()
 {
     struct Row { int id; const char *label, *help; };
     std::vector<Row> rows = {
         { ROW_RESUME, "Resume", "Back to the game. B or HOME does the same; HOME held opens the Wii U HOME Menu." },
+        { ROW_QUICK, "Quick settings", "Fast-forward, crosshairs, rumble: changes that apply at once, for this run." },
         { ROW_GAME_SETTINGS, "Settings for this game",
           "This game's own settings, over the ones for all games. Most take effect at the next start." },
         { ROW_ALL_SETTINGS, "Settings for all games",
@@ -342,6 +426,13 @@ static int run_menu()
                 break;   // HOME leaves the menu from any page
             continue;
         }
+        if (id == ROW_QUICK)
+        {
+            quick_page(px, w, h, &home);
+            if (home)
+                break;
+            continue;
+        }
         if (id == ROW_DISC)
         {
             if (disc_page(px, w, h, &home) || home)
@@ -352,6 +443,7 @@ static int run_menu()
         break;
     }
     wiiu_gx2_hide_ui();
+    label_now.clear();   // the overlay is gone: wiiu_overlay_tick puts a label back if one is due
     if (result == ROW_RESTART)
     {
         if (FILE *f = fopen("fs:/vol/external01/wiiu/nulldc/restart.txt", "w"))
@@ -386,13 +478,55 @@ void wiiu_home_menu_acquired()
 }
 
 // once a frame on the GX2 thread while a game runs: 0 nothing, else HOME_MENU_PICKER or HOME_MENU_QUIT
+// once a frame on the GX2 thread, while a game runs (main_wiiu.cpp): fast-forward and the small labels over the game
+void wiiu_overlay_tick()
+{
+    const OSTime now = OSGetSystemTime();
+    static OSTime started;
+    if (!started)
+        started = now;
+    const bool ff = wiiu_fast_forward && (ffwd_latched || wiiu_ffwd_held());
+    const int active = ff ? (wiiu_ffwd == 2 || wiiu_ffwd == 3 ? wiiu_ffwd : 99) : 0;
+    if (active != wiiu_ffwd_active)
+    {
+        wiiu_ffwd_active = active;
+        static int logged;
+        if (logged++ < 40)
+            printf("[ffwd] %s\n", active ? (active == 99 ? "on, unlimited" : active == 2 ? "on, 2x" : "on, 3x") : "off");
+    }
+    std::string want;
+    if (active)
+        want = active == 99 ? ">> Fast-forward" : active == 2 ? ">> Fast-forward 2x" : ">> Fast-forward 3x";
+    else if ((owns_home || wiiu_fast_forward) && now - started < OSSecondsToTicks(6))
+    {
+        // the start hint, once per run
+        want = owns_home ? "HOME: nullDC menu   HOME held: Wii U menu" : "";
+        if (wiiu_fast_forward)
+            want += want.empty() ? "- held: fast-forward" : "   - held: fast-forward";
+    }
+    if (want == label_now)
+        return;
+    label_now = want;
+    if (want.empty())
+        wiiu_gx2_hide_ui();
+    else
+    {
+        uint32_t w, h;
+        wiiu_menu_size(&w, &h);
+        static std::vector<uint32_t> px;
+        px.resize(w * h);
+        wiiu_label_draw(px.data(), want.c_str());
+        wiiu_gx2_show_menu(px.data(), w, h);
+    }
+}
+
 int wiiu_home_menu_tick()
 {
     if (!owns_home)
         return 0;
     static bool was, long_done, wait_release;
     static OSTime down_at;
-    bool down = wiiu_home_held();
+    bool down = wiiu_home_held() || (get_controller_type() != 1 && wiiu_corner_tapped());   // HOME, or the corner tap
     const OSTime now = OSGetSystemTime();
 #ifdef WIIU_INSTRUMENT
     if (wiiu_home_test)
