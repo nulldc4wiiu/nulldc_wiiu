@@ -188,8 +188,39 @@ void wiiu_disc_stats();     // disc_cache_wiiu.cpp
 // exp_gx2_core: the emulator parks here, between frames, before the foreground is released, so GX2 can shut down
 // cleanly (with the emulator running flat out, HOME could hang otherwise)
 static volatile bool emu_pause_req, emu_paused;
+// a disc swap from the HOME menu (home_menu_wiiu.cpp), done here on the emulator thread between frames: the lid opens
+// at once, and 1.5 s later the new disc goes in and the lid closes (the game sees Open, then Busy, then the disc)
+extern "C" void wiiu_disc_lid_open();                    // plugs/ImgReader/common.cpp
+extern "C" bool wiiu_disc_lid_close(const char *path);
+extern char selectedFilePath[512];
+static volatile int disc_swap;   // 0 none, 1 asked for, 2 the lid is open
+static char disc_swap_path[512];
+static OSTime disc_swap_at;
+void wiiu_disc_swap_request(const char *path)
+{
+    snprintf(disc_swap_path, sizeof(disc_swap_path), "%s", path);
+    __sync_synchronize();
+    disc_swap = 1;
+}
+static void disc_swap_step()
+{
+    if (disc_swap == 1)
+    {
+        wiiu_disc_lid_open();
+        disc_swap_at = OSGetSystemTime();
+        disc_swap = 2;
+    }
+    else if (disc_swap == 2 && OSGetSystemTime() - disc_swap_at > OSMillisecondsToTicks(1500))
+    {
+        if (wiiu_disc_lid_close(disc_swap_path))
+            snprintf(selectedFilePath, sizeof(selectedFilePath), "%s", disc_swap_path);   // the disc in the drive now
+        disc_swap = 0;
+    }
+}
 void wiiu_emu_safe_point()
 {
+    if (disc_swap)
+        disc_swap_step();
     if (emu_pause_req)
     {
         emu_paused = true;

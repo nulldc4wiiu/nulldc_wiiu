@@ -205,6 +205,27 @@ bool InitDrive(u32 fileflags)
 		return true;
 }
 
+// a disc swap (wiiu/home_menu_wiiu.cpp), on the emulator thread: the lid opens, the disc comes out; later the new disc
+// goes in and the lid closes. The GD-ROM sees Open, then Busy, then the new disc (gd_setdisc through DiskChange)
+extern "C" void wiiu_disc_lid_open()
+{
+	TermDrive();
+	NullDriveDiscType=Open;
+	NotifyEvent_gdrom(DiskChange,0);
+	printf("[disc] lid open\n");
+}
+extern "C" bool wiiu_disc_lid_close(const char *path)
+{
+	char fn[512];
+	snprintf(fn,sizeof(fn),"%s",path);
+	const bool ok=InitDrive_(fn);
+	if (!ok)
+		NullDriveDiscType=NoDisk;
+	NotifyEvent_gdrom(DiskChange,0);
+	printf("[disc] lid closed: %s%s\n",path,ok ? "" : " (failed: no disc)");
+	return ok;
+}
+
 void TermDrive()
 {
 	if (CurrDrive !=0 && CurrDrive->Inited==true)

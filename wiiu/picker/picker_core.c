@@ -237,6 +237,51 @@ static int cmp_items(const void *a, const void *b)
     return strcasecmp(((const item *)a)->name, ((const item *)b)->name);
 }
 
+/* Multi-disc sets: files named "... (Disc N) ..." in one folder are one game. The entry for disc 1 stays, shown
+ * without " (Disc 1)"; the other discs go (the HOME menu swaps them, wiiu/home_menu_wiiu.cpp). A set without a disc 1
+ * keeps all its entries. */
+static int disc_number(const char *name, size_t *at, size_t *len)
+{
+    const char *p = strstr(name, " (Disc ");
+    int n = 0;
+    if (!p)
+        return 0;
+    n = atoi(p + 7);
+    *at = (size_t)(p - name);
+    *len = strcspn(p + 1, ")") + 2;   /* " (Disc N)" */
+    return n;
+}
+static void merge_disc_sets(void)
+{
+    int i, j, k;
+    for (i = g_first_scanned; i < g_count; i++) {
+        size_t at, len, at2, len2;
+        int n = disc_number(g_items[i].name, &at, &len);
+        int has_first = 0;
+        if (n < 2)
+            continue;
+        for (j = g_first_scanned; j < g_count && !has_first; j++) {
+            if (disc_number(g_items[j].name, &at2, &len2) == 1 && at2 == at &&
+                !strncmp(g_items[j].name, g_items[i].name, at) &&
+                !strcmp(g_items[j].name + at2 + len2, g_items[i].name + at + len))
+                has_first = 1;
+        }
+        if (!has_first)
+            continue;
+        free(g_items[i].name);
+        free(g_items[i].path);
+        for (k = i; k + 1 < g_count; k++)
+            g_items[k] = g_items[k + 1];
+        g_count--;
+        i--;
+    }
+    for (i = g_first_scanned; i < g_count; i++) {
+        size_t at, len;
+        if (disc_number(g_items[i].name, &at, &len) == 1)
+            memmove(g_items[i].name + at, g_items[i].name + at + len, strlen(g_items[i].name + at + len) + 1);
+    }
+}
+
 int picker_core_scan(void)
 {
     int i;
@@ -250,6 +295,7 @@ int picker_core_scan(void)
     g_first_scanned = g_count;
     scan_dir(g_content, g_cfg->scan_depth);
     qsort(g_items + g_first_scanned, (size_t)(g_count - g_first_scanned), sizeof(item), cmp_items);
+    merge_disc_sets();
     g_view.count = g_count;
     g_view.empty = g_count == g_first_scanned;   /* only the extras: nothing was found */
     g_view.help = g_view.empty || (g_cfg->warning && *g_cfg->warning);

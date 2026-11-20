@@ -12,7 +12,11 @@
 #include <padscore/kpad.h>
 #include <sysapp/switch.h>         // _SYSSwitchToHBMWithMode
 #include <vpad/input.h>
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <stdint.h>
@@ -25,6 +29,7 @@ void wiiu_gx2_hide_ui();
 void wiiu_gx2_frame();
 void wiiu_emu_pause(bool pause);                                     // main_wiiu.cpp
 extern char selectedFilePath[512];
+void wiiu_disc_swap_request(const char *path);   // main_wiiu.cpp: done on the emulator thread
 // settings (picker_wiiu.cpp)
 int wiiu_option_count();
 const char *wiiu_option_key(int i);
@@ -70,8 +75,12 @@ static uint32_t read_menu_buttons()
                                         { 240, MB_ACCEPT, "A" } };
         static const Step picker[] = { { 120, MB_DOWN, "DOWN" }, { 150, MB_DOWN, "DOWN" }, { 180, MB_DOWN, "DOWN" },
                                        { 210, MB_DOWN, "DOWN" }, { 270, MB_ACCEPT, "A" } };
-        const Step *script = wiiu_home_script == 2 ? restart : wiiu_home_script == 3 ? picker : settings;
-        const int steps = wiiu_home_script == 2 ? 4 : wiiu_home_script == 3 ? 5 : 5;
+        // 5: a disc set: DOWN to "Change disc", A, DOWN to the next disc, A (the swap)
+        static const Step disc[] = { { 120, MB_DOWN, "DOWN" }, { 180, MB_ACCEPT, "A" }, { 240, MB_DOWN, "DOWN" },
+                                     { 300, MB_ACCEPT, "A" } };
+        const Step *script = wiiu_home_script == 2 ? restart : wiiu_home_script == 3 ? picker
+                           : wiiu_home_script == 5 ? disc : settings;
+        const int steps = wiiu_home_script == 2 ? 4 : wiiu_home_script == 3 ? 5 : wiiu_home_script == 5 ? 4 : 5;
         test_frame++;
         for (int k = 0; k < steps; k++)
         {
@@ -223,39 +232,121 @@ static void settings_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, boo
     }
 }
 
+// the discs of a set: the files in the game's folder whose names differ from its own only in " (Disc N)", by N.
+// One disc (or no " (Disc N)" in the name): just that one
+static std::vector<std::pair<int, std::string>> disc_set(const std::string &path)
+{
+    std::vector<std::pair<int, std::string>> set;
+    const size_t slash = path.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? "." : path.substr(0, slash), file = path.substr(slash + 1);
+    const size_t at = file.find(" (Disc ");
+    if (at != std::string::npos)
+    {
+        const size_t close = file.find(')', at);
+        const std::string head = file.substr(0, at), tail = close == std::string::npos ? "" : file.substr(close + 1);
+        if (DIR *d = opendir(dir.c_str()))
+        {
+            while (struct dirent *e = readdir(d))
+            {
+                const std::string n = e->d_name;
+                if (n.size() > head.size() + tail.size() + 8 && !n.compare(0, head.size(), head) &&
+                    !n.compare(head.size(), 7, " (Disc ") && n.size() >= tail.size() &&
+                    !n.compare(n.size() - tail.size(), tail.size(), tail))
+                    set.push_back({ atoi(n.c_str() + head.size() + 7), dir + "/" + n });
+            }
+            closedir(d);
+        }
+        std::sort(set.begin(), set.end());
+    }
+    if (set.empty())
+        set.push_back({ 1, path });
+    return set;
+}
+
+// the disc page: each disc of the set, the one in the drive marked; A puts the chosen one in (the menu then closes, the
+// lid opens and closes on the emulator thread). Returns true when a swap was asked for
+static bool disc_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *home)
+{
+    const auto set = disc_set(selectedFilePath);
+    std::vector<std::string> lines;
+    std::vector<const char *> rows;
+    int sel = 0;
+    for (size_t i = 0; i < set.size(); i++)
+    {
+        const bool in = set[i].second == selectedFilePath;
+        lines.push_back("Disc " + std::to_string(set[i].first) + (in ? "  (in the drive)" : ""));
+        if (in)
+            sel = (int)i;
+    }
+    for (const auto &l : lines)
+        rows.push_back(l.c_str());
+    const int r = run_page(px, w, h, (int)rows.size(), sel, [&](uint32_t *p, int s) {
+        wiiu_menu_draw(p, "Change disc", rows.data(), (int)rows.size(), s,
+                       "A: open the lid, put this disc in and close it again (about 1.5 s), as when a game asks for "
+                       "the next disc. B: back.");
+    }, home);
+    if (r < 0 || set[r].second == selectedFilePath)
+        return false;
+    printf("[home] disc swap: %s\n", set[r].second.c_str());
+    wiiu_disc_swap_request(set[r].second.c_str());
+    return true;
+}
+
 // the menu: returns what the main loop should do (1 the game list, 2 the Wii U Menu, 3 restart the game)
-enum { ROW_RESUME, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT, N_ROWS };
+enum { ROW_RESUME, ROW_DISC, ROW_GAME_SETTINGS, ROW_ALL_SETTINGS, ROW_RESTART, ROW_PICKER, ROW_QUIT };
 static int run_menu()
 {
-    static const char *const rows[N_ROWS] = { "Resume", "Settings for this game", "Settings for all games",
-                                              "Restart the game", "Quit to the game list", "Quit to the Wii U Menu" };
-    static const char *const help[N_ROWS] = {
-        "Back to the game. B or HOME does the same; HOME held opens the Wii U HOME Menu.",
-        "This game's own settings, over the ones for all games. Most take effect at the next start.",
-        "The settings every game starts with (the game list's options page). Most take effect at the next start.",
-        "Starts this game again from the Dreamcast's boot, as if switched off and on.",
-        "Stops the game and goes back to the list of games.",
-        "Stops the game and goes back to the Wii U Menu." };
+    struct Row { int id; const char *label, *help; };
+    std::vector<Row> rows = {
+        { ROW_RESUME, "Resume", "Back to the game. B or HOME does the same; HOME held opens the Wii U HOME Menu." },
+        { ROW_GAME_SETTINGS, "Settings for this game",
+          "This game's own settings, over the ones for all games. Most take effect at the next start." },
+        { ROW_ALL_SETTINGS, "Settings for all games",
+          "The settings every game starts with (the game list's options page). Most take effect at the next start." },
+        { ROW_RESTART, "Restart the game", "Starts this game again from the Dreamcast's boot, as if switched off and on." },
+        { ROW_PICKER, "Quit to the game list", "Stops the game and goes back to the list of games." },
+        { ROW_QUIT, "Quit to the Wii U Menu", "Stops the game and goes back to the Wii U Menu." } };
+    const auto set = disc_set(selectedFilePath);
+    std::string disc_label;
+    if (set.size() > 1)
+    {
+        int in = 1;
+        for (const auto &d : set)
+            if (d.second == selectedFilePath)
+                in = d.first;
+        disc_label = "Change disc (disc " + std::to_string(in) + " of " + std::to_string(set.size()) + " in the drive)";
+        rows.insert(rows.begin() + 1, { ROW_DISC, disc_label.c_str(), "Opens the lid and puts another disc of this game in." });
+    }
+    std::vector<const char *> labels;
+    for (const auto &r : rows)
+        labels.push_back(r.label);
     uint32_t w, h;
     wiiu_menu_size(&w, &h);
     std::vector<uint32_t> px(w * h);
     printf("[home] menu open\n");
     wiiu_emu_pause(true);
-    int sel = 0, result = 0;
+    int sel = 0, result = ROW_RESUME;
     for (;;)
     {
         bool home = false;
-        const int r = run_page(px, w, h, N_ROWS, sel, [&](uint32_t *p, int s) {
-            wiiu_menu_draw(p, "nullDC", rows, N_ROWS, s, help[s]);
+        const int r = run_page(px, w, h, (int)rows.size(), sel, [&](uint32_t *p, int s) {
+            wiiu_menu_draw(p, "nullDC", labels.data(), (int)labels.size(), s, rows[s].help);
         }, &home);
-        if (r == ROW_GAME_SETTINGS || r == ROW_ALL_SETTINGS)
+        const int id = r < 0 ? ROW_RESUME : rows[r].id;
+        if (id == ROW_GAME_SETTINGS || id == ROW_ALL_SETTINGS)
         {
-            settings_page(px, w, h, r == ROW_GAME_SETTINGS, &home);
+            settings_page(px, w, h, id == ROW_GAME_SETTINGS, &home);
             if (home)
                 break;   // HOME leaves the menu from any page
             continue;
         }
-        result = r < 0 ? ROW_RESUME : r;
+        if (id == ROW_DISC)
+        {
+            if (disc_page(px, w, h, &home) || home)
+                break;   // a swap is under way: back to the game to see it
+            continue;
+        }
+        result = id;
         break;
     }
     wiiu_gx2_hide_ui();
@@ -268,7 +359,7 @@ static int run_menu()
         }
     }
     wiiu_emu_pause(false);
-    printf("[home] menu closed: %s\n", rows[result]);
+    printf("[home] menu closed (%d)\n", result);
     return result == ROW_PICKER ? 1 : result == ROW_QUIT ? 2 : result == ROW_RESTART ? 3 : 0;
 }
 

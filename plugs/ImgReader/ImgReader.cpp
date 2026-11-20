@@ -213,7 +213,7 @@ u32 FASTCALL libGDR_GetDiscType()
 	if (CurrDrive)
 		return CurrDrive->GetDiscType();
 	else
-		return NoDisk;
+		return NullDriveDiscType == Open ? Open : NoDisk;   // the lid open (a disc swap), else no disc
 }
 
 void FASTCALL libGDR_GetSessionInfo(u8* out,u8 ses)

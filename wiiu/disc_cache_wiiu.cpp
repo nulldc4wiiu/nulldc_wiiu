@@ -24,7 +24,7 @@ enum { EMPTY, LOADING, READY };
 struct Slot
 {
     int track;
-    u32 chunk, sectors, used;
+    u32 chunk, sectors, used, gen;   // gen: the disc it was loaded for (disc_gen at claim)
     volatile int state;
     u8 *data;
 };
@@ -40,6 +40,7 @@ struct Track
 Slot slots[SLOTS];
 Track tracks[MAX_TRACKS];
 u32 use_clock;
+u32 disc_gen;   // bumped for each new disc: a chunk still loading for the old one is never found for the new
 OSFastMutex lock;
 bool ready;
 
@@ -58,7 +59,7 @@ u32 stat_hits, stat_misses, stat_waits, stat_prefetched, stat_async, stat_async_
 int find(int track, u32 chunk)
 {
     for (u32 i = 0; i < SLOTS; i++)
-        if (slots[i].state != EMPTY && slots[i].track == track && slots[i].chunk == chunk)
+        if (slots[i].state != EMPTY && slots[i].gen == disc_gen && slots[i].track == track && slots[i].chunk == chunk)
             return (int)i;
     return -1;
 }
@@ -81,6 +82,7 @@ int claim(int track, u32 chunk)
     {
         slots[best].track = track;
         slots[best].chunk = chunk;
+        slots[best].gen = disc_gen;
         slots[best].sectors = 0;
         slots[best].used = ++use_clock;   // new, so newest: it kept its old occupant's stamp, and read-ahead evicted
                                           // the chunks it had just loaded before the game reached them
@@ -206,11 +208,13 @@ void wiiu_disc_cache_track(int track, const char *path, u32 ss, s32 offset)
     OSFastMutex_Lock(&lock);
     if (track == 0)
     {
-        // a new disc: forget the old one (a load still running finishes into a slot nobody looks up)
+        // a new disc (the first one, or a swap from the HOME menu): forget the old one. A load still running finishes
+        // under the old generation, which find() never matches
         for (u32 i = 0; i < SLOTS; i++)
             if (slots[i].state == READY)
                 slots[i].state = EMPTY;
         q_head = q_tail = 0;
+        disc_gen++;
     }
     for (u32 i = 0; i < SLOTS; i++)
         if (slots[i].track == track && slots[i].state == READY)
