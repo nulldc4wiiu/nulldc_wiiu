@@ -7,9 +7,32 @@ instead of in vWii mode, so it gets the Wii U's three CPU cores, its memory, and
 
 This project only exists because of nullDC4Wii's effort to resurrect the project.
 
-**Version v0.800-U1** (based on nullDC4Wii alpha 0.800)
+**Version v0.800-U2** (based on nullDC4Wii alpha 0.800)
 
 See: AI / Claude Disclosure below
+
+## What's new in v0.800-U2
+
+Faster, with the front-end features U1 lacked. Every game tested runs at full speed except Dead or Alive 2's
+fights (96%, up from 87%) and Street Fighter III's fights (see [known issues](KNOWN-ISSUES-WiiU.md)).
+
+- **HOME menu** over the paused game: resume, save states, change disc, quick settings, remap buttons, settings
+  for this game or all games, restart, quit to the game list or the Wii U Menu. HOME held opens the Wii U HOME
+  Menu; a tap in the GamePad's top right corner opens nullDC's menu too.
+- **Save states:** 4 slots per game, with the save time, and "Undo the last load".
+- **Multi-disc games** (files named "... (Disc N) ...") are one entry in the game list; change discs from the
+  HOME menu.
+- **Fast-forward:** hold − (GamePad, Classic or Pro Controller), or latch it on in Quick settings.
+- **Rumble:** a Puru Puru Pack in each controller's second slot, on the GamePad's and Pro Controller's motors.
+- **Button remapping** per controller kind, with turbo, for one game or all games.
+- **Light gun:** House of the Dead 2, Confidential Mission and Death Crimson OX turn the gun on by themselves; the
+  GamePad's touch screen is a gun (tap beside the picture to reload), and a Wii Remote and touch can be two guns.
+  "Force gun on" (options page) is for another gun game, for that run only.
+- **Speed:** faster translated CPU code (store-queue writes, the T bit and float constants in registers, FIPR),
+  graphics intake and vertex conversion work spread over two cores, GD-ROM reads that wait in emulated time, and a
+  faster 2D framebuffer path (pause screens, logos).
+- **Fixes:** Shenmue's faces, Dead or Alive 2's select screens and doppelganger scenes, sound samples at
+  unaligned addresses, a per-voice low-pass filter, and sound reads timed against the mixer.
 
 ## What's new in v0.800-U1
 
@@ -28,25 +51,26 @@ This release:
 
 ## Compatibility & speed
 
-Measured on a Wii U console with this release's default settings, over 80-90 s of each game's demo or play
+Measured on a Wii U console with each release's default settings, over 80-90 s of each game's demo or play
 (100% = Dreamcast speed):
 
-| Game | Speed | Notes |
-|---|---|---|
-| Soulcalibur | 99.7% | |
-| Marvel vs. Capcom 2 | 98.4% | |
-| Crazy Taxi | 99.5% | |
-| Metropolis Street Racer | 100% | |
-| Jet Grind Radio | 100% | |
-| Shenmue | 100% | sound distorts in the rain and thunder scenes |
-| Dead or Alive 2 | 94.5% demo, **87.4% in fights** | not full speed |
-| The House of the Dead 2 | 100% | light gun with the Wii Remote |
-| AeroWings 2 | 100% | |
-| Power Stone 2 | 100% | |
-| Spider-Man | 100% | |
-| Sonic Adventure | 98.7% | |
-| Gunbird 2 | 96.5% | dips for a few seconds while loading |
-| Street Fighter III: 3rd Strike | ~99% | |
+| Game | U2 | U1 | Notes |
+|---|---|---|---|
+| Dead or Alive 2, fights | **96.0%** | 87.4% | not full speed |
+| Dead or Alive 2, demo | 100% | 94.5% | |
+| Soulcalibur | 100% | 99.7% | |
+| Marvel vs. Capcom 2 | 100% | 98.4% | |
+| Crazy Taxi | 100% | 99.5% | |
+| Metropolis Street Racer | 100% | 100% | |
+| Jet Grind Radio | 100% | 100% | |
+| Shenmue | 100% | 100% | sound distorts in the rain and thunder scenes |
+| The House of the Dead 2 | 100% | 100% | light gun: Wii Remote or GamePad touch |
+| AeroWings 2 | 100% | 100% | |
+| Power Stone 2 | 100% | 100% | |
+| Spider-Man | 100% | 100% | |
+| Sonic Adventure | 100% | 98.7% | U2: title and menu screens |
+| Gunbird 2 | 100% | 96.5% | |
+| Street Fighter III: 3rd Strike | 100% | ~99% | demo only: fights are noticeably slow |
 
 Other games may work; these are the ones tested on a console. Discs: `.gdi` (tested), `.cdi` and `.mds`. You need
 your own Dreamcast BIOS (`dc_boot.bin` and `dc_flash.bin`); it is not included.
@@ -81,7 +105,7 @@ starts.
 | Option (`config.txt` key) | Values (default first) | Effect |
 |---|---|---|
 | Fast memory (`fastmem`) | on, off | Dreamcast memory mapped straight into the Wii U's; turn it off if a game crashes |
-| Light gun (`lightgun`) | off, on | the Wii Remote's pointer is the gun on every port; for light-gun games only |
+| Force gun on (`lightgun`) | off, on | the light gun on every port, for a gun game that doesn't turn it on by itself; this run only, never saved |
 | 3D resolution (`render`) | 960x720, 640x480 | 640x480 halves the GPU work |
 | Sound when slow (`slow_sound`) | keeps pitch, slows down | below full speed: short gaps, or slower and lower sound |
 | Graphics on own core (`gfx_core`) | on, off | graphics away from the emulated CPU's core (next start) |
@@ -106,6 +130,11 @@ are on by default; each turns off with 0, for testing a game that misbehaves:
 | `rt_width` | 960, 640 | 3D resolution (4:3) |
 | `audio_buffer` | milliseconds | the sound queue's target |
 | `sdlog` | 0, 1 | `1`: also write the log to `sd:/wiiu/nulldc/log.txt` |
+| `home_menu`, `save_states`, `fast_forward`, `rumble`, `gun_v2` | 1, 0 | U2's HOME menu, its save state rows, fast-forward, the rumble packs, the touch gun and gun games turning the gun on; each on by default |
+| `ffwd` | 2, 3, 0 | fast-forward speed (0: as fast as it goes) |
+| `gun_cross` | 1, 0 | the Wii Remote guns' crosshairs |
+| `remote_pad` | 1, 0 | `0`: a Wii Remote alone (or with a Nunchuk) is only a gun or pointer, not a controller |
+| `remap_gamepad`, `remap_classic`, `turbo`, `stick_dpad_swap` | lists | what the HOME menu's Remap page saves (also per game in `gamecfg/<game>.txt`) |
 | `exp_gx2_core` | 0, 1, 2 | graphics thread on the emulator's core (0), core 0 (1) or core 2 (2) |
 | `exp_split_convert` | 0, 1 | vertex conversion split over two cores |
 | `exp_aica_thread` | 0, 1, 2 | sound mixing on the emulator's core (0), core 0 (1) or core 2 (2) |
@@ -146,12 +175,15 @@ What makes the Wii U build fast:
 
 ## Features
 
-- **Game picker** with on-screen help pages (adding discs, the BIOS, controls)
-- **Options page** (X in the picker): fast memory, light gun, 3D resolution, sound when slow, and the speed
-  settings (graphics core, sound core, faster CPU code, smooth frames, reloaded code check, sound buffer)
+- **Game picker** with on-screen help pages (adding discs, the BIOS, controls); multi-disc games as one entry
+- **Options page** (X in the picker): fast memory, Force gun on, 3D resolution, sound when slow, and the speed
+  settings (graphics core, sound core, faster CPU code, smooth frames, reloaded code check, sound buffer, disc
+  speed)
+- **HOME menu** in game: save states, change disc, quick settings, remap buttons, settings, restart, quit
+- **Fast-forward** (− held) and **rumble**
 - **Dreamcast menu** entry (first in the picker) for the BIOS menu: memory cards, date, settings
 - **Up to four players**: GamePad, Pro Controller, Classic Controller or Wii Remote
-- **Light gun** with the Wii Remote's pointer (needs the sensor bar)
+- **Light gun** with the Wii Remote's pointer (needs the sensor bar) or the GamePad's touch screen
 
 ## Controls
 
@@ -164,12 +196,14 @@ What makes the Wii U build fast:
 | Dreamcast A B X Y | — | B A Y X (GamePad, Pro, Classic) · A B 2 1 (Wii Remote alone) |
 | Start | — | + (Wii Remote alone: HOME) |
 | Triggers | — | L/ZL, R/ZR (Wii Remote alone: − and +) |
-| Quit | hold + and − | hold + and − for a second, or HOME then Close |
+| HOME menu | — | HOME (held: the Wii U HOME Menu), or a tap in the GamePad's top right corner |
+| Fast-forward | — | hold − (GamePad, Classic, Pro) |
+| Quit | hold + and − | hold + and − for a second, or HOME then Quit to the Wii U Menu |
 
-Player 1 is the GamePad or the first controller; players 2–4 use controllers 2–4. **Light gun** (options page):
-the Wii Remote's pointer aims, B shoots, A reloads, − is Start; on player 1 the GamePad still gives Start (+), the
-D-pad and the trigger (A/ZR). Turn the light gun off for other games. HOME doesn't suspend the game; use it to
-close nullDC.
+Player 1 is the GamePad or the first controller; players 2–4 use controllers 2–4. **Light gun** (gun games turn it
+on by themselves; "Force gun on" on the options page for others): the Wii Remote's pointer aims, B shoots, A
+reloads, − is Start; a tap on the GamePad's picture shoots there, and a tap beside it reloads. On player 1 the
+GamePad still gives Start (+), the D-pad and the trigger (A/ZR).
 
 ## Building for Wii U
 
@@ -208,20 +242,7 @@ The shaders are checked in compiled (`wiiu/shaders/*.gsh`). After editing a `.ve
 
 ## Known issues
 
-- **Dead or Alive 2** fights run at about 87%: the emulated CPU's core is the limit.
-- **Sound:** the sound chip's effects processor (DSP) isn't emulated, so there's no reverb or effects. Some scenes
-  distort (The House of the Dead 2's intro, Shenmue's rain and thunder), and there's faint background
-  scratchiness. Shenmue screeches briefly between its splash screens and the attract.
-- **Rendering:** Marvel vs. Capcom 2's intro frame spills past 4:3; a few grey shards at the bottom left of Jet
-  Grind Radio's title; a striped band on Metropolis Street Racer's car options screen; translucent modifier
-  volumes aren't drawn. Shenmue's hair draws badly. The House of the Dead 2's attract and menu backgrounds flash
-  (textures come and go; gameplay is fine). In Power Stone 2, the elevator's green lettering flashes during play.
-- **Light gun** shots land slightly to the side of the crosshair.
-- **Street Fighter III: 3rd Strike** is noticeably slow in fights (its attract runs at full speed) and shows many
-  visual artifacts.
-- **Gunbird 2:** the left stick doesn't move the ship; use the D-pad. Speed drops for a few seconds while it
-  loads (seen in each test run).
-- **HOME** doesn't suspend the game; closing works.
+See [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md), by release, the latest first.
 
 ## Future work
 

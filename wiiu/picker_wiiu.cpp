@@ -18,7 +18,7 @@
 #include "font_roboto.h"
 #include "picker/picker_core.h"
 
-#define NULLDC_WIIU_VERSION "v0.800-U1"   // this Wii U release (upstream alpha 0.800); README-WiiU.md
+#define NULLDC_WIIU_VERSION "v0.800-U2"   // this Wii U release (upstream alpha 0.800); README-WiiU.md
 
 void wiiu_gx2_show_ui(const u32 *px, u32 w, u32 h);
 void wiiu_gx2_hide_ui();

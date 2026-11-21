@@ -10,7 +10,7 @@ assignees: ''
 This repository is the unofficial Wii U port of nullDC4Wii. Report Wii U issues here, not to the nullDC4Wii
 developers upstream. Do not attach or link BIOS files or game images.
 
-**Version** (shown in the picker header, e.g. v0.800-U1):
+**Version** (shown in the picker header, e.g. v0.800-U2):
 
 **Game** (title and region, e.g. Soulcalibur (USA)):
 
