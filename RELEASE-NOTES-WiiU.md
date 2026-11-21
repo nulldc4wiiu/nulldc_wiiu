@@ -1,6 +1,6 @@
 # nullDC (Wii U): release notes
 
-By release, the latest first. Speed per game: [COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md); known issues: [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md).
+By release, the latest first. Speed per game: [BENCHES-WiiU.md](BENCHES-WiiU.md); known issues: [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md).
 
 ## v0.800-U2
 

@@ -3,7 +3,7 @@
 A native Wii U port of **nullDC4Wii** that runs most games at or close to full speed.
 
 nullDC4Wii is the Dreamcast emulator for the Wii (itself a fork of skmp's nullDCe). This port runs as a Wii U app
-instead of in vWii mode, so it gets the Wii U's three CPU cores, its memory, and its GPU (GX2) with HD output.
+instead of in vWii mode.
 
 This project only exists because of nullDC4Wii's effort to resurrect the project.
 
@@ -13,19 +13,21 @@ See: AI / Claude Disclosure below
 
 ## What's new in v0.800-U2
 
-Faster, with the front-end features U1 lacked. Every game tested runs at full speed except Dead or Alive 2's
-fights (96%, up from 87%) and Street Fighter III's fights (see [known issues](KNOWN-ISSUES-WiiU.md)).
+* Full speed emulation across most games tested.
+* GX2 graphics fixes
+* WiiU and emulator audio fixes
+* in-game overlay UI, save states, better gun support, multicd support
 
-The full list, and U1's: [RELEASE-NOTES-WiiU.md](RELEASE-NOTES-WiiU.md).
+see also
+* [known issues](KNOWN-ISSUES-WiiU.md).
+* [RELEASE-NOTES-WiiU.md](RELEASE-NOTES-WiiU.md).
 
-## Compatibility & speed
+## Benches
 
 All 14 games tested on a console run at full speed in U2, except Dead or Alive 2's fights (96%) and Street Fighter
 III: 3rd Strike's fights (noticeably slow). The per-game tables, for each release, are in
-[COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md).
+[BENCHES-WiiU.md](BENCHES-WiiU.md).
 
-Discs: `.gdi` (tested), `.cdi` and `.mds`. You need your own Dreamcast BIOS (`dc_boot.bin` and `dc_flash.bin`); it
-is not included.
 
 ## Installing
 
@@ -118,7 +120,7 @@ See [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md), by release, the latest first.
 ## More
 
 - [RELEASE-NOTES-WiiU.md](RELEASE-NOTES-WiiU.md): what's new, by release
-- [COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md): speed per game, by release
+- [BENCHES-WiiU.md](BENCHES-WiiU.md): speed per game, by release
 - [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md): known issues, by release
 - [SETTINGS-WiiU.md](SETTINGS-WiiU.md): every setting
 - [DESIGN-WiiU.md](DESIGN-WiiU.md): what makes the Wii U build fast, and what's next

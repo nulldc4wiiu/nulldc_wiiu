@@ -1,6 +1,6 @@
 # nullDC (Wii U): known issues
 
-By release, the latest first. See [README-WiiU.md](README-WiiU.md) for installing and settings, and [COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md) for speed.
+By release, the latest first. See [README-WiiU.md](README-WiiU.md) for installing and settings, and [BENCHES-WiiU.md](BENCHES-WiiU.md) for speed.
 
 ## v0.800-U2
 

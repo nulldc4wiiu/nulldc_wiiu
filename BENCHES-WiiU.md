@@ -1,4 +1,4 @@
-# nullDC (Wii U): compatibility & speed
+# nullDC (Wii U): benches
 
 By release, the latest first. Each table was measured on a Wii U console with that release's default settings,
 over 80-90 s of each game's demo or play (100% = Dreamcast speed). Other games may work; these are the ones
