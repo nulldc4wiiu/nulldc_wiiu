@@ -1,8 +1,10 @@
 # nullDC (Wii U): benches
 
-Automated test benches.  Performance measured on a Wii U console with that release's default settings using automated testing. Each bench was ~80-90 s of each game's demo or play (100% = Dreamcast speed). Other games may work; these are the ones tested on a console.
-* Known problems per game are in
-[KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md).
+Automated test benches. Performance measured on a Wii U console with that release's default settings, using
+automated testing. Each bench was ~80-90 s of each game's demo or play (100% = Dreamcast speed). Other games may
+work; these are the ones tested on a console.
+
+- Known problems per game: [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md)
 
 ## v0.800-U2
 

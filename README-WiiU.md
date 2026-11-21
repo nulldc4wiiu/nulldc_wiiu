@@ -13,14 +13,15 @@ See: AI / Claude Disclosure below
 
 ## What's new in v0.800-U2
 
-* Full speed emulation across most games tested.
-* GX2 graphics fixes
-* WiiU and emulator audio fixes
-* in-game overlay UI, save states, better gun support, multicd support
+- Full-speed emulation in most games tested
+- GX2 graphics fixes
+- Wii U and emulator audio fixes
+- In-game overlay menu, save states, better light gun support, multi-disc support
 
-see also
-* [known issues](wiiu/KNOWN-ISSUES-WiiU.md).
-* [RELEASE-NOTES-WiiU.md](wiiu/RELEASE-NOTES-WiiU.md).
+See also:
+
+- [Known issues](wiiu/KNOWN-ISSUES-WiiU.md)
+- [Release notes](wiiu/RELEASE-NOTES-WiiU.md)
 
 ## Benches
 
