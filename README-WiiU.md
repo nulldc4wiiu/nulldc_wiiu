@@ -19,14 +19,14 @@ See: AI / Claude Disclosure below
 * in-game overlay UI, save states, better gun support, multicd support
 
 see also
-* [known issues](KNOWN-ISSUES-WiiU.md).
-* [RELEASE-NOTES-WiiU.md](RELEASE-NOTES-WiiU.md).
+* [known issues](wiiu/KNOWN-ISSUES-WiiU.md).
+* [RELEASE-NOTES-WiiU.md](wiiu/RELEASE-NOTES-WiiU.md).
 
 ## Benches
 
 All 14 games tested on a console run at full speed in U2, except Dead or Alive 2's fights (96%) and Street Fighter
 III: 3rd Strike's fights (noticeably slow). The per-game tables, for each release, are in
-[BENCHES-WiiU.md](BENCHES-WiiU.md).
+[BENCHES-WiiU.md](wiiu/BENCHES-WiiU.md).
 
 
 ## Installing
@@ -47,14 +47,14 @@ Files under `sd:/wiiu/nulldc/`:
 | `data/vmu_save_A1.bin` ... `D2.bin` | memory cards, one per controller port and slot; created when first used |
 | `<game>/` | one folder per game |
 | `config.txt` | the options page's settings; also `content=<folder>` to look for games somewhere else and `autoload=<file>` to start a game without the picker |
-| `wiiu.cfg` | optional settings ([SETTINGS-WiiU.md](SETTINGS-WiiU.md)) |
+| `wiiu.cfg` | optional settings ([SETTINGS-WiiU.md](wiiu/SETTINGS-WiiU.md)) |
 | `nullDC.cfg` | the emulator core's own settings file |
 | `last_run.txt` | a one-line summary of the last run |
 
 ## Settings
 
 X in the game list opens the options page; most settings are there, and the HOME menu's settings pages set them
-for one game or all. Every option and `wiiu.cfg` key: [SETTINGS-WiiU.md](SETTINGS-WiiU.md).
+for one game or all. Every option and `wiiu.cfg` key: [SETTINGS-WiiU.md](wiiu/SETTINGS-WiiU.md).
 
 ## Features
 
@@ -65,7 +65,7 @@ for one game or all. Every option and `wiiu.cfg` key: [SETTINGS-WiiU.md](SETTING
 - **HOME menu** in game: save states, change disc, quick settings, remap buttons (experimental), settings,
   restart (experimental), quit
 - **Fast-forward** (− held) and **rumble** (experimental); experimental means not yet tested on a console, see
-  the [release notes](RELEASE-NOTES-WiiU.md#experimental)
+  the [release notes](wiiu/RELEASE-NOTES-WiiU.md#experimental)
 - **Dreamcast menu** entry (first in the picker) for the BIOS menu: memory cards, date, settings
 - **Up to four players**: GamePad, Pro Controller, Classic Controller or Wii Remote
 - **Light gun** with the Wii Remote's pointer (needs the sensor bar) or the GamePad's touch screen
@@ -92,7 +92,7 @@ GamePad still gives Start (+), the D-pad and the trigger (A/ZR).
 
 ## Building for Wii U
 
-See [BUILDING-WiiU.md](BUILDING-WiiU.md).
+See [BUILDING-WiiU.md](wiiu/BUILDING-WiiU.md).
 
 ## Credits
 
@@ -115,16 +115,16 @@ See [BUILDING-WiiU.md](BUILDING-WiiU.md).
 
 ## Known issues
 
-See [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md), by release, the latest first.
+See [KNOWN-ISSUES-WiiU.md](wiiu/KNOWN-ISSUES-WiiU.md), by release, the latest first.
 
 ## More
 
-- [RELEASE-NOTES-WiiU.md](RELEASE-NOTES-WiiU.md): what's new, by release
-- [BENCHES-WiiU.md](BENCHES-WiiU.md): speed per game, by release
-- [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md): known issues, by release
-- [SETTINGS-WiiU.md](SETTINGS-WiiU.md): every setting
-- [DESIGN-WiiU.md](DESIGN-WiiU.md): what makes the Wii U build fast, and what's next
-- [BUILDING-WiiU.md](BUILDING-WiiU.md): building from source
+- [RELEASE-NOTES-WiiU.md](wiiu/RELEASE-NOTES-WiiU.md): what's new, by release
+- [BENCHES-WiiU.md](wiiu/BENCHES-WiiU.md): speed per game, by release
+- [KNOWN-ISSUES-WiiU.md](wiiu/KNOWN-ISSUES-WiiU.md): known issues, by release
+- [SETTINGS-WiiU.md](wiiu/SETTINGS-WiiU.md): every setting
+- [DESIGN-WiiU.md](wiiu/DESIGN-WiiU.md): what makes the Wii U build fast, and what's next
+- [BUILDING-WiiU.md](wiiu/BUILDING-WiiU.md): building from source
 
 ## AI / Claude Disclosure
 

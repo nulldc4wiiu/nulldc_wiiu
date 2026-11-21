@@ -1,6 +1,6 @@
 # nullDC (Wii U): settings
 
-The options page and `wiiu.cfg`. Installing and controls: [README-WiiU.md](README-WiiU.md).
+The options page and `wiiu.cfg`. Installing and controls: [README-WiiU.md](../README-WiiU.md).
 
 **Options page** (X in the picker; saved in `config.txt`). Settings marked "next start" apply the next time nullDC
 starts.
