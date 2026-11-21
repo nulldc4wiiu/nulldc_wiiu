@@ -60,8 +60,10 @@ for one game or all. Every option and `wiiu.cfg` key: [SETTINGS-WiiU.md](SETTING
 - **Options page** (X in the picker): fast memory, Force gun on, 3D resolution, sound when slow, and the speed
   settings (graphics core, sound core, faster CPU code, smooth frames, reloaded code check, sound buffer, disc
   speed)
-- **HOME menu** in game: save states, change disc, quick settings, remap buttons, settings, restart, quit
-- **Fast-forward** (− held) and **rumble**
+- **HOME menu** in game: save states, change disc, quick settings, remap buttons (experimental), settings,
+  restart (experimental), quit
+- **Fast-forward** (− held) and **rumble** (experimental); experimental means not yet tested on a console, see
+  the [release notes](RELEASE-NOTES-WiiU.md#experimental)
 - **Dreamcast menu** entry (first in the picker) for the BIOS menu: memory cards, date, settings
 - **Up to four players**: GamePad, Pro Controller, Classic Controller or Wii Remote
 - **Light gun** with the Wii Remote's pointer (needs the sensor bar) or the GamePad's touch screen

@@ -25,6 +25,20 @@ fights (96%, up from 87%) and Street Fighter III's fights (see [known issues](KN
 - **Fixes:** Shenmue's faces, Dead or Alive 2's select screens and doppelganger scenes, sound samples at
   unaligned addresses, a per-voice low-pass filter, and sound reads timed against the mixer.
 
+### Experimental
+
+In U2 but not yet tested on a console (they worked in an emulator):
+
+- **Rumble:** the games find the packs, but the motors haven't been felt on a console yet.
+- **Button remapping** (HOME menu → Remap buttons).
+- **Restart the game** (HOME menu).
+- **The GamePad corner tap** that opens the HOME menu.
+- **"Force gun on"** turning itself off again after a quit to the game list.
+- **Quitting with + and −** without a moment of fast-forward first.
+
+Tested on a console: the HOME menu, save states, Change disc, Quick settings, fast-forward, the light gun and the
+speed work.
+
 ## v0.800-U1
 
 The first pass of the Wii U port, focused on making better use of the Wii U's hardware. Not much effort has gone

@@ -31,9 +31,9 @@ By release, the latest first. See [README-WiiU.md](README-WiiU.md) for installin
 - **Change disc** during a game's boot, rather than at its own disc prompt, sends the Dreamcast to its BIOS menu,
   as on a real Dreamcast.
 - **Gunbird 2:** the left stick doesn't move the ship; use the D-pad.
-- **Not yet tried on a console:** button remapping, Restart the game, the GamePad corner tap, how the rumble feels,
-  "Force gun on" resetting after a quit to the game list, and the + and − quit without a fast-forward burst. Save
-  states, Change disc, Quick settings, fast-forward, the HOME menu and the light gun were tested on a console.
+- **Experimental** (not yet tested on a console): rumble, button remapping, Restart the game, the GamePad corner
+  tap, "Force gun on" resetting, and the + and − quit; see the
+  [release notes](RELEASE-NOTES-WiiU.md#experimental).
 
 Fixed since U1: HOME now opens nullDC's menu over the paused game; Gunbird 2's speed drops while loading weren't
 seen in U2's test run.
