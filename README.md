@@ -2,7 +2,10 @@
 
 A native Wii U port of the nullDC4Wii Dreamcast emulator.
 
-- **[README-WiiU.md](README-WiiU.md)**: the Wii U port. Installing, controls and settings; [COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md): speed per game, and [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md): known issues, by release.
+- **[README-WiiU.md](README-WiiU.md)**: the Wii U port: installing, controls, features. With it, by release:
+  [RELEASE-NOTES-WiiU.md](RELEASE-NOTES-WiiU.md), [COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md) (speed per game)
+  and [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md); and [SETTINGS-WiiU.md](SETTINGS-WiiU.md),
+  [DESIGN-WiiU.md](DESIGN-WiiU.md) and [BUILDING-WiiU.md](BUILDING-WiiU.md).
 - **[README-Wii.md](README-Wii.md)**: the original nullDC4Wii README for the Wii version, kept for reference.
   Its instructions, settings and links are for the Wii, not the Wii U.
 
