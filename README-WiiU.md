@@ -107,6 +107,7 @@ See [BUILDING-WiiU.md](BUILDING-WiiU.md).
 - **CafeGLSL** — the shader compiler used to build the GX2 shaders.
 - **Roboto font** — The Roboto Project Authors; see `THIRD-PARTY-NOTICES.txt`.
 - **Wii U port & optimizations** — perfcrash26, with Claude (see below).
+- **Release, support & testing** — ClaudiWolf2056: owns the release, general support, onboarding and testing.
 
 ## Known issues
 
