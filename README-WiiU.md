@@ -217,6 +217,8 @@ The shaders are checked in compiled (`wiiu/shaders/*.gsh`). After editing a `.ve
   volumes aren't drawn. Shenmue's hair draws badly. The House of the Dead 2's attract and menu backgrounds flash
   (textures come and go; gameplay is fine). In Power Stone 2, the elevator's green lettering flashes during play.
 - **Light gun** shots land slightly to the side of the crosshair.
+- **Street Fighter III: 3rd Strike** is noticeably slow in fights (its attract runs at full speed) and shows many
+  visual artifacts.
 - **Gunbird 2:** the left stick doesn't move the ship; use the D-pad. Speed drops for a few seconds while it
   loads (seen in each test run).
 - **HOME** doesn't suspend the game; closing works.
