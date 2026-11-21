@@ -22,13 +22,7 @@ See also:
 
 - [Known issues](wiiu/KNOWN-ISSUES-WiiU.md)
 - [Release notes](wiiu/RELEASE-NOTES-WiiU.md)
-
-## Benches
-
-All 14 games tested on a console run at full speed in U2, except Dead or Alive 2's fights (96%) and Street Fighter
-III: 3rd Strike's fights (noticeably slow). The per-game tables, for each release, are in
-[BENCHES-WiiU.md](wiiu/BENCHES-WiiU.md).
-
+- [Benches](wiiu/BENCHES-WiiU.md)
 
 ## Installing
 

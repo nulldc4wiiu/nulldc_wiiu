@@ -1,8 +1,7 @@
 # nullDC (Wii U): benches
 
-Automated test benches. Performance measured on a Wii U console with that release's default settings, using
-automated testing. Each bench was ~80-90 s of each game's demo or play (100% = Dreamcast speed). Other games may
-work; these are the ones tested on a console.
+Automated test benches to track speed improvements and bug regressions.
+Each bench was ~80-90 s of each game's demo or play (100% = Dreamcast speed).
 
 - Known problems per game: [KNOWN-ISSUES-WiiU.md](KNOWN-ISSUES-WiiU.md)
 
@@ -16,14 +15,14 @@ work; these are the ones tested on a console.
 | Crazy Taxi | 100% | 99.5% | |
 | Metropolis Street Racer | 100% | 100% | |
 | Jet Grind Radio | 100% | 100% | |
-| Shenmue | 100% | 100% | sound distorts in the rain and thunder scenes |
+| Shenmue | 100% | 100% | screechy audio during some transitions |
 | The House of the Dead 2 | 100% | 100% | light gun: Wii Remote or GamePad touch |
 | AeroWings 2 | 100% | 100% | |
 | Power Stone 2 | 100% | 100% | |
 | Spider-Man | 100% | 100% | |
 | Sonic Adventure | 100% | 98.7% | measured on its title and menu screens |
 | Gunbird 2 | 100% | 96.5% | |
-| Street Fighter III: 3rd Strike | 100% demo | ~99% | fights are noticeably slow |
+| Street Fighter III: 3rd Strike | 100% demo | ~99% | fights are noticeably slow, GX2 glitches |
 
 ## v0.800-U1
 
