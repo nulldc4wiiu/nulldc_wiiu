@@ -357,7 +357,7 @@ void aica_clear_live_kyonex(u32 chan);
 // Key writes (channel register 1: KYONB, KYONEX) queued for the mixer and acted on. A monitor read (LP/EG/SGC, CA)
 // made between the two sees the channel as it was before the key event: DOA2's sound driver reads a voice it has
 // just keyed on as released and silent, keys it off again, and later reuses its channel (music lost or looping on
-// the console, 2026-11-16). Such a read waits for the mixer (aica_sync_if_key_pending); other reads don't.
+// the console). Such a read waits for the mixer (aica_sync_if_key_pending); other reads don't.
 static volatile u32 key_queued, key_applied;
 static volatile u32 aica_catch_up;   // a read is waiting: the mixer runs up to the emulator, whatever aica_lag_test says
 int g_aica_key_sync = 1;             // aica_key_sync=0 in wiiu.cfg: reads never wait (the old behaviour, for A/B)

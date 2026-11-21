@@ -355,7 +355,7 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 #if defined(__WIIU__)
 	if (g_exp_entry_cold)
 	{
-		// entry_cold (J3-1): a normal entry falls straight into the body; the rare out-of-cycles path (li next_pc,
+		// entry_cold: a normal entry falls straight into the body; the rare out-of-cycles path (li next_pc,
 		// b loop_do_update_write) is a cold fragment after the block. ~16M block entries a second in a DOA2 fight
 		// each saved a taken branch
 		ppc_label* upd=ppc_CreateLabel();

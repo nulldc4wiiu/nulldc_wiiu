@@ -58,7 +58,7 @@ static void j2_cold(const ColdFrag& c);   // sq_guard (below the fastmem helpers
 static void ColdReset() { s_cold_n = 0; }
 
 #if defined(__WIIU__)
-extern "C" { int g_exp_entry_cold = 1; }   // J3-1 (declared in wii_driver_emit.inc); on by default
+extern "C" { int g_exp_entry_cold = 1; }   // entry_cold (declared in wii_driver_emit.inc); on by default
 // ngen_Begin with entry_cold: the out-of-cycles path of this block's entry check (ColdFrag kind 7, pc in fuct)
 static void cold_entry_update(ppc_label* blt_site,u32 pc)
 {

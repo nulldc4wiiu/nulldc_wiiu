@@ -38,7 +38,7 @@ extern "C" int get_y_scaler_preset(), get_h_scaler_preset();
 static WiiuFrame *build = &frames[0];   // emulator thread: the frame collecting TA input
 static WiiuFrame *parked;               // ta_keyed: a finished list waiting for its buffer's render (ListInit)
 static WiiuFrame *dec;                  // intake thread (wiiu_ta_decode): the frame FrameDecoder writes
-// sq_inline (J1): the JIT writes TA store-queue blocks into the frame itself (shop_pref, wii_driver.cpp), from
+// sq_inline: the JIT writes TA store-queue blocks into the frame itself (shop_pref, wii_driver.cpp), from
 // this one cache line: the next free slot, the frame's end, per store queue a mask that is 0x01800000 when its QACR
 // area is the TA (dst & mask == 0: TA polygon data) and all ones otherwise, and the scanner's skip count (blocks
 // that continue a 64-byte record need no parse). While a frame is built, next is the block count: ta_sync() writes
@@ -75,8 +75,8 @@ static inline void ta_cursor()
 }
 // sq_ram (J1b): per store queue, main RAM's host base when its QACR area is RAM (3), else 0. The JIT's cold
 // store-queue fragment copies such a block straight to RAM (the C path's same 32-byte copy, without its call, the
-// J1 sync and the address decode: ~4-5K blocks a frame in DOA2 fights, 3.8% of core 1 in r3a's J0 profile)
-extern "C" { u32 g_sq_ram[2]; int g_exp_sq_ram = 1; }   // on (console r3b: DOA2 fights +0.5%); 0 turns it off
+// the sync and the address decode: ~4-5K blocks a frame in DOA2 fights, 3.8% of core 1 in a console profile)
+extern "C" { u32 g_sq_ram[2]; int g_exp_sq_ram = 1; }   // on (DOA2 fights +0.5% on a console); 0 turns it off
 // QACR0/1 writes (dc/sh4/ccn.cpp) and renderer init: which store queue writes may go inline
 extern "C" void wiiu_sq_masks()
 {
@@ -542,7 +542,7 @@ void VBlank()
 // A render of the parked buffer publishes it while the build goes on. A render with no list init since the
 // previous one redraws a list the PVR has: the scene on screen stays. Flycast keys its TA contexts the same way
 // (ta_ctx.cpp, by TA_OL_BASE; the render finds its context from the region array).
-int wiiu_exp_ta_keyed = 1;   // console fr9: the intro and the cut scene correct, no cost; 0: as before
+int wiiu_exp_ta_keyed = 1;   // on a console: the intro and the cut scene correct, no cost; 0: as before
 u32 wiiu_ta_parks, wiiu_ta_parked_renders, wiiu_ta_redraws, wiiu_ta_dropped_lists;   // [ta] keyed line
 static inline u32 buffer_key(u32 addr) { return (addr & 0xF00000) | 1; }   // never 0, a frame without a list init
 static void frame_clear(WiiuFrame *f)

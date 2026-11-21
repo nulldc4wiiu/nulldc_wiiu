@@ -173,7 +173,7 @@ extern int wiiu_mv_bbox, wiiu_mv_bbox_check;   // present_gx2.cpp
 extern int wiiu_exp_tr_depth;   // present_gx2.cpp: auto-sorted translucent polygons with depth >= (2: own depth writes)
 extern int wiiu_exp_split_convert, wiiu_exp_gx2_core, wiiu_exp_frame_queue;
 extern "C" int g_exp_ps_ftrv, g_exp_fm_x, g_exp_jit_tlive, g_exp_jit_fconst, g_exp_fipr_split;   // wii_driver.cpp
-extern "C" int g_exp_sq_inline;   // render_gx2.cpp (J1: the JIT's inline TA store-queue write)
+extern "C" int g_exp_sq_inline;   // render_gx2.cpp (the JIT's inline TA store-queue write)
 
 struct wiiu_preset { const char *name; int *value; };
 extern const wiiu_preset wiiu_presets[];
@@ -417,7 +417,7 @@ static void load_wiiu_cfg()
             wiiu_mv_bbox = atoi(value);   // modifier volume stencil quads bounded to each volume's box (present_gx2.cpp)
         else if (!strcmp(key, "tr_depth"))
             wiiu_exp_tr_depth = atoi(value);   // translucent depth as Flycast in auto-sort mode (DOA2 character select)
-        // frame-rate work (console fr1/fr2): intake on cores 2 and 0
+        // frame-rate work: intake on cores 2 and 0
         else if (!strcmp(key, "depth_inline"))
             { extern int wiiu_exp_depth_inline; wiiu_exp_depth_inline = atoi(value); }   // depth scale gathered per strip
         else if (!strcmp(key, "ta_dcbz"))
@@ -468,17 +468,17 @@ static void load_wiiu_cfg()
         else if (!strcmp(key, "jit_fconst"))
             g_exp_jit_fconst = atoi(value);   // jit_fconst: float immediates from a constant pool, not stw+lfs
         else if (!strcmp(key, "fipr_split"))
-            g_exp_fipr_split = atoi(value);   // P3: fipr as two product chains (shorter dependency chain)
+            g_exp_fipr_split = atoi(value);   // fipr_split: fipr as two product chains (shorter dependency chain)
         else if (!strcmp(key, "sq_guard"))
-            { extern int g_exp_sq_guard; g_exp_sq_guard = atoi(value); }   // J2: compile-time store-queue test for pair-float stores (1, 2)
+            { extern int g_exp_sq_guard; g_exp_sq_guard = atoi(value); }   // sq_guard: compile-time store-queue test for pair-float stores (1, 2)
         else if (!strcmp(key, "sq_inline"))
-            g_exp_sq_inline = atoi(value);   // J1: TA store-queue blocks written by the JIT (2: vertex starts counted inline too)
+            g_exp_sq_inline = atoi(value);   // sq_inline: TA store-queue blocks written by the JIT (2: vertex starts counted inline too)
         else if (!strcmp(key, "gd_async"))
             { extern int g_exp_gd_async; g_exp_gd_async = atoi(value); }   // H1 v2: paced GD-DMA waits for the SD read-ahead (with g_gdrom_delay)
         else if (!strcmp(key, "sq_ram"))
             { extern int g_exp_sq_ram; g_exp_sq_ram = atoi(value); }   // J1b: store-queue blocks to RAM copied by the JIT, no C call
         else if (!strcmp(key, "entry_cold"))
-            { extern int g_exp_entry_cold; g_exp_entry_cold = atoi(value); }   // J3-1: block entry check falls through, update path cold
+            { extern int g_exp_entry_cold; g_exp_entry_cold = atoi(value); }   // entry_cold: block entry check falls through, update path cold
         else if (!strcmp(key, "fastmem"))
             fastmem = atoi(value) != 0;
         else if (!strcmp(key, "rt_width"))

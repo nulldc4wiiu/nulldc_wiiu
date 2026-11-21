@@ -120,7 +120,7 @@ void request(int track, u32 chunk)
 }
 
 // H2.1: a chunk the paced drive is waiting for goes to the front of the queue, ahead of read-ahead that may never
-// be used (behind up to 16 of those it waited 100-300 ms on the console, h2a). When the queue is full the newest
+// be used (behind up to 16 of those it waited 100-300 ms on the console). When the queue is full the newest
 // read-ahead request makes room.
 void request_now(int track, u32 chunk)
 {

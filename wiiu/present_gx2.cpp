@@ -362,13 +362,13 @@ static WiiuStrip strips[WIIU_MAX_STRIPS];
 // full-screen quad at quad_base for the stencil passes
 static WiiuModVol modvols[WIIU_MAX_MV_PARAMS];
 static u32 modvol_count, mv_base, quad_base, shad_scale;
-// tr_depth (DOA2's character select, 2026-11-18; on, console tr1; tr_depth=0 turns it off): auto-sorted translucent polygons
+// tr_depth (DOA2's character select; on; tr_depth=0 turns it off): auto-sorted translucent polygons
 // (pre-sort mode off, the PVR's default) are drawn with depth >= and no depth writes, as Flycast does
 // (rend/gles/gldraw.cpp SetGPState). With their own Z-write bit, a translucent quad's transparent margins wrote depth
 // and hid what came after at the same or lesser depth: DOA2's stacked mode tiles, all at one depth, kept only the
 // first one drawn, and the fighter's name lost its bottom edge to the portrait tiles' margins. Pre-sorted frames keep
 // the polygons' own depth mode and Z-write bit (Flycast does the same).
-// 2 (the default since 2026-11-20): depth >= as in 1, but each polygon writes depth by its own Z-write bit, and fully
+// 2 (the default): depth >= as in 1, but each polygon writes depth by its own Z-write bit, and fully
 // transparent pixels of plainly blended polygons (source alpha, inverse source alpha) are discarded first, so their
 // margins write no depth. Without depth writes (1), the per-strip sort drew Shenmue's overlapping translucent head
 // strips in the wrong order: pieces of brow and mouth over Ryo's face. Sorting per triangle, as Flycast does, wasn't
@@ -1002,7 +1002,7 @@ static void adopt_scene()
 //   conv_dcbz (2, on): each output vertex is one 32-byte cache line, written whole: dcbz it rather than read it
 //     first; 2: the index list too
 //   conv_prio (16, on): the helper's priority on core 0. 16 is below the AICA mixer (15) and level with the GX2
-//     thread, so neither waits for the helper (console fr2, fr3, fr5: DOA2 fights +0.6 to +1.3 frames shown a
+//     thread, so neither waits for the helper (console: DOA2 fights +0.6 to +1.3 frames shown a
 //     second and fewer underruns, MvC2 +1.8, no game slower); 0 = as created (14)
 int wiiu_exp_conv_split2 = 1, wiiu_exp_conv_dcbz = 2, wiiu_exp_conv_prio = 16;
 static inline void conv_line(GpuVertex *o)

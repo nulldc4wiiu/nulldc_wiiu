@@ -252,7 +252,7 @@ void EXPORT_CALL cfgSaveStr(const wchar * Section, const wchar * Key, const wcha
 {
 	// unchanged and already saved: nothing to write. Every save rewrites the whole file, and SaveSettings() saves
 	// 9 values at every exit; on the Wii U's SD card those rewrites ran past the exit's 3 s wait while the disc
-	// read-ahead was busy, and the exit hung (h2a, 2026-11-17)
+	// read-ahead was busy, and the exit hung (seen on a console)
 	ConfigSection* cs=cfgdb.GetEntry(Section);
 	ConfigEntry* ce=cs->FindEntry(Key);
 	if (ce && (ce->flags & CEM_SAVE) && !(ce->flags & (CEM_VIRTUAL|CEM_READONLY)) && ce->value==String)

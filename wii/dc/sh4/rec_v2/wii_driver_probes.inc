@@ -63,7 +63,7 @@ extern "C" void hotblocks_reset()
 }
 
 extern "C" { int g_exp_jit_tlive = 1, g_exp_jit_fconst = 1; }   // jit_tlive (T in r31 until the jcond), jit_fconst (float immediates): on (DOA2 fights +0.8% on a console)
-extern "C" { int g_exp_fipr_split = 1; }   // P3: fipr as two chains, pinned operands read in place; on (console r3a: DOA2 fights +2.4%)
+extern "C" { int g_exp_fipr_split = 1; }   // fipr_split: fipr as two chains, pinned operands read in place; on (DOA2 fights +2.4% on a console)
 u32 g_cnt_tlive, g_cnt_fconst, g_cnt_fipr;   // compiled sites using them (sampler counters line)
 // jit_fconst: float immediates the JIT loads into pinned FRs, written once each, never stored to again; full: nullptr
 static u32 jit_fconst_pool[256] __attribute__((aligned(32)));
@@ -282,7 +282,7 @@ void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
 #if defined(__WIIU__)
 void FASTCALL wiiu_sqw_fast(u32 dst);
-// sq_inline (J1): shop_pref writes TA store-queue blocks into the frame itself, from g_ta_fast
+// sq_inline: shop_pref writes TA store-queue blocks into the frame itself, from g_ta_fast
 // (wiiu/render_gx2.cpp, one cache line: next, end, sq_mask[2], skip, vfast, nvert, nstrip); the parse and the rest
 // stay in C. sq_inline=2 also counts a vertex start inline when vfast >= 0
 extern "C" { extern u32 g_ta_fast[8], g_sq_ram[2]; extern int g_exp_sq_inline, g_exp_sq_ram; void wiiu_ta_scan(const u32 *b);

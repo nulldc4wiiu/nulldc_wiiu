@@ -1,4 +1,4 @@
-// wii_driver_fastmem.inc: fastmem shapes, the DSI trampolines, sq_guard (J2).
+// wii_driver_fastmem.inc: fastmem shapes, the DSI trampolines, sq_guard.
 // Part of wii_driver.cpp, which #includes it: not compiled on its own.
 
 // ============================================================================
@@ -141,7 +141,7 @@ static u32 s_fm_ring_n;
 static u32 s_fm_float_sites = 0;
 static void fm_note_float_site();
 #if defined(__WIIU__)
-// sq_guard (J2-1): a fastmem float store tests at compile time whether its address is the store queue
+// sq_guard: a fastmem float store tests at compile time whether its address is the store queue
 // (E0000000-E3FFFFFF: top 6 bits 0x38), instead of faulting into a trampoline on first use and detouring there
 // forever. DOA2 fills the store queue with fmov.d (4 pair stores per 32-byte block, ~27K blocks a frame).
 //   1: store queue inline (rlwinm, cmpwi, bne, rlwinm, addis, stfs x2), other targets in a cold fragment that holds
@@ -150,7 +150,7 @@ static void fm_note_float_site();
 //      fragment (2 taken branches, no trampoline)
 //   +4: single-float stores (fmov.s) too, not only pairs
 // The EA scratch is the shape's own (rarg1 for pairs, rarg2 for scalars): free, as the data is in FPRs.
-int g_exp_sq_guard = 2;   // on: 2 (console r3a: DOA2 fights +1.1%); 0 turns it off
+int g_exp_sq_guard = 2;   // on: 2 (DOA2 fights +1.1% on a console); 0 turns it off
 u32 g_cnt_sqguard;   // compiled guards
 // s = &sq_both[a & 0x3F] minus the returned displacement (folded into the stores when it fits)
 static s32 j2_sq_ea(u32 s,u32 a,u32 extra)

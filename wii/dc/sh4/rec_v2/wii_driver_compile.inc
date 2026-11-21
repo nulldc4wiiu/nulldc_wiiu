@@ -1783,7 +1783,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 #if defined(__WIIU__)
 				if (g_exp_sq_inline)
 				{
-					// sq_inline (J1): a TA block goes straight into the frame being built, no call. rarg0 = dst
+					// sq_inline: a TA block goes straight into the frame being built, no call. rarg0 = dst
 					// stays intact for the cold paths; scratch r4-r8, r11, f0-f3 (op-local); r12 is not touched.
 					const u32 lo=ppc_addr_high(ppc_r11,(void*)g_ta_fast);	// lis r11; lo+field fits (32-aligned)
 					ppc_rlwinmx(ppc_r4,ppc_rarg0,29,29,29,0);		// (dst & 0x20) >> 3: this queue's mask
