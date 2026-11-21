@@ -16,8 +16,8 @@ Downloads are on the [Releases](../../releases) page. You need your own Dreamcas
 
 ## Disclaimer
 
-This is an independent, unofficial port. It is **not affiliated with or endorsed by** the nullDC4Wii project or
-its developers.
+This is an independent port. It is **not supported by** the nullDC4Wii project or
+its developers at this time.
 
 - **Do not report bugs in this port to nullDC4Wii**: not on its GitHub, Discord or wiki. Problems here are
   most likely caused by the port, not by them.
