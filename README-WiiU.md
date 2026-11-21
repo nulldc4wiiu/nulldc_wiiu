@@ -51,29 +51,12 @@ This release:
 
 ## Compatibility & speed
 
-Measured on a Wii U console with each release's default settings, over 80-90 s of each game's demo or play
-(100% = Dreamcast speed):
+All 14 games tested on a console run at full speed in U2, except Dead or Alive 2's fights (96%) and Street Fighter
+III: 3rd Strike's fights (noticeably slow). The per-game tables, for each release, are in
+[COMPATIBILITY-WiiU.md](COMPATIBILITY-WiiU.md).
 
-| Game | U2 | U1 | Notes |
-|---|---|---|---|
-| Dead or Alive 2, fights | **96.0%** | 87.4% | not full speed |
-| Dead or Alive 2, demo | 100% | 94.5% | |
-| Soulcalibur | 100% | 99.7% | |
-| Marvel vs. Capcom 2 | 100% | 98.4% | |
-| Crazy Taxi | 100% | 99.5% | |
-| Metropolis Street Racer | 100% | 100% | |
-| Jet Grind Radio | 100% | 100% | |
-| Shenmue | 100% | 100% | sound distorts in the rain and thunder scenes |
-| The House of the Dead 2 | 100% | 100% | light gun: Wii Remote or GamePad touch |
-| AeroWings 2 | 100% | 100% | |
-| Power Stone 2 | 100% | 100% | |
-| Spider-Man | 100% | 100% | |
-| Sonic Adventure | 100% | 98.7% | U2: title and menu screens |
-| Gunbird 2 | 100% | 96.5% | |
-| Street Fighter III: 3rd Strike | 100% | ~99% | demo only: fights are noticeably slow |
-
-Other games may work; these are the ones tested on a console. Discs: `.gdi` (tested), `.cdi` and `.mds`. You need
-your own Dreamcast BIOS (`dc_boot.bin` and `dc_flash.bin`); it is not included.
+Discs: `.gdi` (tested), `.cdi` and `.mds`. You need your own Dreamcast BIOS (`dc_boot.bin` and `dc_flash.bin`); it
+is not included.
 
 ## Installing
 
