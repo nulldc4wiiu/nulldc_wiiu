@@ -211,10 +211,11 @@ The shaders are checked in compiled (`wiiu/shaders/*.gsh`). After editing a `.ve
 - **Dead or Alive 2** fights run at about 87%: the emulated CPU's core is the limit.
 - **Sound:** the sound chip's effects processor (DSP) isn't emulated, so there's no reverb or effects. Some scenes
   distort (The House of the Dead 2's intro, Shenmue's rain and thunder), and there's faint background
-  scratchiness.
+  scratchiness. Shenmue screeches briefly between its splash screens and the attract.
 - **Rendering:** Marvel vs. Capcom 2's intro frame spills past 4:3; a few grey shards at the bottom left of Jet
   Grind Radio's title; a striped band on Metropolis Street Racer's car options screen; translucent modifier
-  volumes aren't drawn.
+  volumes aren't drawn. Shenmue's hair draws badly. The House of the Dead 2's attract and menu backgrounds flash
+  (textures come and go; gameplay is fine). In Power Stone 2, the elevator's green lettering flashes during play.
 - **Light gun** shots land slightly to the side of the crosshair.
 - **Gunbird 2:** the left stick doesn't move the ship; use the D-pad. Speed drops for a few seconds while it
   loads (seen in each test run).
