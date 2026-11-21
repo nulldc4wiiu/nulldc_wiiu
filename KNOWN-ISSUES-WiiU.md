@@ -21,6 +21,8 @@ By release, the latest first. See [README-WiiU.md](README-WiiU.md) for installin
   - Marvel vs. Capcom 2's intro frame spills past 4:3; a few grey shards at the bottom left of Jet Grind Radio's
     title; a striped band on Metropolis Street Racer's car options screen; translucent modifier volumes aren't
     drawn.
+- **HOME → Close can freeze:** holding HOME in a game and choosing Close in the Wii U HOME Menu can freeze, without
+  returning to the Wii U Menu. Quit from nullDC's own menu (HOME, then Quit to the Wii U Menu) instead.
 - **Fast-forward** doesn't hold its 2x or 3x setting: light games run several times faster (Soulcalibur 3 to 5.5
   times at "2x").
 - **Light gun** shots land slightly to the side of the crosshair. Gun games are recognised by the disc's file
