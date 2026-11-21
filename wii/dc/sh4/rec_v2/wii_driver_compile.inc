@@ -818,7 +818,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					break;
 				}
 
-				// jit_fconst (Review 3 K2): an immediate into a pinned FR (fldi0/fldi1, ~15% of DOA2's hottest block)
+				// jit_fconst: an immediate into a pinned FR (fldi0/fldi1, ~15% of DOA2's hottest block)
 				// went li; stw slot; lfs fr,slot: the lfs hits the store it follows. The context slot still gets the
 				// value, but the FPR loads it from a constant pool instead (append-only, never reset, so it outlives
 				// code cache flushes)

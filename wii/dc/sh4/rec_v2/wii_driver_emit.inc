@@ -145,7 +145,7 @@ struct
 	u32  cr0_bit;        // BI_CR0_xx index holding the condition
 	bool cr0_invert;     // sr_T is the INVERSE of that bit (e.g. >= is !<)
 
-	// jit_tlive (Review 3 K1): blocks ending in a delay-slot branch capture T in shop_jcond, several ops after
+	// jit_tlive: blocks ending in a delay-slot branch capture T in shop_jcond, several ops after
 	// the compare that produced it (dt; mov.l; bt.s), so T-FORWARDING above can't help and the jcond reloads the T
 	// the producer stored a few instructions earlier: a load-hit-store, 28% of DOA2's hottest block. ppc_djump (r31)
 	// is free until that jcond (the block's own jcond, jdyn and exit write it; C calls preserve it), so every T store before the
@@ -219,7 +219,7 @@ void reg_reload_all_fpu();
 
 extern "C" int get_jit_sbp_preset();
 #if defined(__WIIU__)
-// J3-1 (scratch/nulldc-j3-design.md): entry_cold, the entry check falls through (wii_driver_cold.inc)
+// entry_cold: the entry check falls through (wii_driver_cold.inc)
 extern "C" int g_exp_entry_cold;
 static void cold_entry_update(ppc_label* blt_site,u32 pc);
 #endif

@@ -642,7 +642,7 @@ extern "C" {
 
 // AICA_LPF - the per-voice low-pass filter and its filter envelope (FEG: Q, FLV0-4, FAR/FD1R/FD2R/FRR,
 // LPOFF), ported from Flycast; nullAICA had them as stubs, so every voice played unfiltered (DOA2's
-// doppelganger lines use Q=14 and sounded harsh). Console-verified (S1 battery s1b). 0=off, 1=on (default).
+// doppelganger lines use Q=14 and sounded harsh). Tested on a console. 0=off, 1=on (default).
 int g_aica_lpf_preset = 1;
 
 extern "C" {
@@ -652,7 +652,7 @@ extern "C" {
 // AICA_SA_FIX - sample reads for a voice whose start address (SA) is not 4-byte aligned. Sound RAM is
 // kept as host big-endian words (AICA byte A at host A^3), and the legacy reads swizzle the offset from SA
 // instead of the address, so such a voice plays the wrong bytes: DOA2's doppelganger voice lines garble,
-// 60% of MvC2's sounds distort. Console-verified (S1 battery s1b). 0=off (legacy), 1=on (default).
+// 60% of MvC2's sounds distort. Tested on a console. 0=off (legacy), 1=on (default).
 extern "C" int g_aica_sa_fix_preset;   // C linkage: sgc_if.cpp reads it directly (presets_generated.cpp on Wii U)
 int g_aica_sa_fix_preset = 1;
 

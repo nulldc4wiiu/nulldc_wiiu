@@ -376,7 +376,7 @@ static u32 modvol_count, mv_base, quad_base, shad_scale;
 // polygons' own depth mode and Z-write bit (U1)
 int wiiu_exp_tr_depth = 2;
 static bool trans_autosort;
-// mv_bbox (Review 0, on by default since Review 1; mv_bbox=0 turns it off): each closing volume's screen box in canvas pixels (x0, y0, x1, y1; x0 = -1e30: whole screen), so
+// mv_bbox (on by default; mv_bbox=0 turns it off): each closing volume's screen box in canvas pixels (x0, y0, x1, y1; x0 = -1e30: whole screen), so
 // its stencil resolve and clear quads fill only the box instead of the whole target
 int wiiu_mv_bbox = 1;
 int wiiu_mv_bbox_check;   // mv_bbox_check=1 (instrumented): every 30th frame with volumes, drawn with and without boxes, compared

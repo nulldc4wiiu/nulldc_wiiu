@@ -62,7 +62,7 @@ extern "C" void hotblocks_reset()
 	s_hb_overflow = 0;
 }
 
-extern "C" { int g_exp_jit_tlive = 1, g_exp_jit_fconst = 1; }   // Review 3 K1 (T in r31 until the jcond), K2 (float immediates): on (console k12c: DOA2 fights +0.8%)
+extern "C" { int g_exp_jit_tlive = 1, g_exp_jit_fconst = 1; }   // jit_tlive (T in r31 until the jcond), jit_fconst (float immediates): on (DOA2 fights +0.8% on a console)
 extern "C" { int g_exp_fipr_split = 1; }   // P3: fipr as two chains, pinned operands read in place; on (console r3a: DOA2 fights +2.4%)
 u32 g_cnt_tlive, g_cnt_fconst, g_cnt_fipr;   // compiled sites using them (sampler counters line)
 // jit_fconst: float immediates the JIT loads into pinned FRs, written once each, never stored to again; full: nullptr

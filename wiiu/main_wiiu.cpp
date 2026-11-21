@@ -464,9 +464,9 @@ static void load_wiiu_cfg()
         else if (!strcmp(key, "ta_keyed"))
             { extern int wiiu_exp_ta_keyed; wiiu_exp_ta_keyed = atoi(value); }   // a render draws its own buffer's list (DOA2)
         else if (!strcmp(key, "jit_tlive"))
-            g_exp_jit_tlive = atoi(value);   // Review 3 K1: T kept in r31 until a delay-slot branch reads it
+            g_exp_jit_tlive = atoi(value);   // jit_tlive: T kept in r31 until a delay-slot branch reads it
         else if (!strcmp(key, "jit_fconst"))
-            g_exp_jit_fconst = atoi(value);   // Review 3 K2: float immediates from a constant pool, not stw+lfs
+            g_exp_jit_fconst = atoi(value);   // jit_fconst: float immediates from a constant pool, not stw+lfs
         else if (!strcmp(key, "fipr_split"))
             g_exp_fipr_split = atoi(value);   // P3: fipr as two product chains (shorter dependency chain)
         else if (!strcmp(key, "sq_guard"))

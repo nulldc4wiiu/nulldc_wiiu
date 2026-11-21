@@ -109,7 +109,7 @@ extern "C" int get_debug_loop();
 extern "C" int get_bcache_preset();	// main.cpp: 0=off (default), 1=flat dispatch cache
 extern "C" int get_dyn_ic_preset();	// main.cpp: 0=off (default), 1=call+jump, 2=+rts
 extern "C" int get_fpu_pin_preset();	// main.cpp: 0=off (default), 1=pin fr[0..15] to f14..f29
-extern "C" int g_exp_jit_tlive, g_exp_jit_fconst;	// below: Review 3 K1, K2
+extern "C" int g_exp_jit_tlive, g_exp_jit_fconst;	// below: jit_tlive, jit_fconst
 extern "C" int g_exp_fipr_split;
 extern u32 g_cnt_fipr;
 extern "C" int get_jit_align_preset();	// main.cpp: 0=off (default), 1=32-byte-align block entries
