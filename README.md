@@ -1,4 +1,3 @@
-<div align="center">
 # nullDC4WiiU - Dreamcast Emulator for Wii U
 
 <img width="848" height="208" alt="4" src="https://github.com/user-attachments/assets/ed50330c-633b-46ba-b1a0-83d7eb753e6e" />
