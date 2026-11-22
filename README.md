@@ -89,12 +89,19 @@ sd:/
 ## Documentation
 
 README-WiiU.md	- Full Wii U guide: installation, controls, and features
+
 RELEASE-NOTES-WiiU.md	- Changelog and highlights by release
+
 BENCHES-WiiU.md	- Hardware speed benchmarks per game
+
 KNOWN-ISSUES-WiiU.md - Known bugs and per-game issues
+
 SETTINGS-WiiU.md - Reference for every menu and config setting
+
 DESIGN-WiiU.md - Architecture notes, performance work, and roadmap
+
 BUILDING-WiiU.md - Instructions for building from source with devkitPro / Docker
+
 README-Wii.md - Original nullDC4Wii README kept for reference (Wii only, not Wii U)
 
 ## Credits & License
