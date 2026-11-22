@@ -11,6 +11,7 @@
 #include "kpad_wiiu.h"
 
 extern "C" { int wiiu_rumble = 1; }   // rumble=0: no Puru Puru Pack (the second VMU slot as before)
+extern "C" int wiiu_pad_shift;        // ogc_compat.cpp (the second VMU slot as before)
 int wiiu_rumble_motors = 1;   // the HOME menu's quick settings: 0 keeps the motors off (the pack still answers the game)
 #ifdef WIIU_INSTRUMENT
 int wiiu_rumble_test;   // rumble_test=s: player 1's pack at full power for 1 s at s seconds (test runs)
@@ -44,8 +45,13 @@ void motors(int p, float power)
         }
         else
             VPADStopMotor(VPAD_CHAN_0);
+        if (!wiiu_pad_shift)
+            wiiu_kpad_motor(0, power > 0.0f);
+        return;
     }
-    wiiu_kpad_motor(p, power > 0.0f);
+    const int kpad_chan = wiiu_pad_shift ? p - 1 : p;
+    if (kpad_chan >= 0 && kpad_chan < 4)
+        wiiu_kpad_motor(kpad_chan, power > 0.0f);
 }
 }
 
@@ -96,10 +102,11 @@ void wiiu_rumble_stop()
 {
     if (!wiiu_rumble)
         return;
+    VPADStopMotor(VPAD_CHAN_0);
     for (int p = 0; p < 4; p++)
     {
         players[p].until = 0;
         players[p].playing = 0.0f;
-        motors(p, 0.0f);
+        wiiu_kpad_motor(p, false);
     }
 }

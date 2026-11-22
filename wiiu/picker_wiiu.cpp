@@ -24,6 +24,7 @@ void wiiu_gx2_show_ui(const u32 *px, u32 w, u32 h);
 void wiiu_gx2_hide_ui();
 void wiiu_gx2_frame();
 bool wiiu_app_running();   // main_wiiu.cpp
+extern "C" int wiiu_pad_shift;   // ogc_compat.cpp
 
 namespace
 {
@@ -339,6 +340,9 @@ const picker_option options[] = {
     { "vmu_screen", "VMU on GamePad",
       "Off: hidden. Corner: small VMU in bottom-left of GamePad. Dedicated: full VMU + FPS on GamePad while TV shows the game.",
       vmu_modes, 3, 1 },
+    { "pad1_p2", "1st pad as Player 2",
+      "Off: GamePad and 1st controller share Player 1. On: GamePad is Player 1 and 1st controller (Pro/Classic/Wiimote) becomes Player 2.",
+      off_on, 2, 0 },
 };
 int options_count() { return (int)(sizeof(options) / sizeof(options[0])); }
 const int WIIU_GAME_OPTIONS = 4;   // fastmem, lightgun, render, slow_sound: read after the game is chosen
@@ -353,14 +357,25 @@ void wiiu_menu_draw(u32 *px, const char *title, const char *const *rows, int n, 
     for (u32 i = 0; i < W * H; i++)
         px[i] = 0x00000080;   // black at half alpha: the game shows through, dimmed
     text(px, MARGIN, 2, title, HILITE);
-    for (int i = 0; i < n; i++)
+    const int help_row = (int)(H / FONT_LINE) - 4;
+    const int max_vis = help_row - 5;
+    int top = 0;
+    if (n > max_vis)
     {
+        top = sel - max_vis / 2;
+        if (top > n - max_vis) top = n - max_vis;
+        if (top < 0) top = 0;
+    }
+    const int vis = n < max_vis ? n : max_vis;
+    for (int k = 0; k < vis; k++)
+    {
+        const int i = top + k;
         char line[160];
         snprintf(line, sizeof(line), "%s %s", i == sel ? ">" : " ", rows[i]);
-        text(px, MARGIN, 4 + i, line, i == sel ? HILITE : FG);
+        text(px, MARGIN, 4 + k, line, i == sel ? HILITE : FG);
     }
     if (help)
-        text_wrapped(px, MARGIN, H / FONT_LINE - 4, help, DIM);
+        text_wrapped(px, MARGIN, help_row, help, DIM);
 }
 void wiiu_menu_size(u32 *w, u32 *h) { *w = W; *h = H; }
 // a small label in the top left over the running game (fast-forward, the start hint): transparent but for a dark
@@ -572,6 +587,7 @@ void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *r
     *lightgun = picker_core_option(1) == 1;   // off_on: index 1 is "on"
     *render_width = picker_core_option(2) == 1 ? 640 : 960;
     *keep_pitch = picker_core_option(3) == 1;
+    wiiu_pad_shift = picker_core_option(16) == 1;   // off_on: index 1 is "on"
 }
 
 void wiiu_picker_extra_options(const char *home, int *ratio, int *cable, int *frameskip, int *render_delay)

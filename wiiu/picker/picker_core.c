@@ -21,7 +21,7 @@ static char g_autoload[512];
 static char g_keys[MAX_KEYS][32], g_vals[MAX_KEYS][256];
 static int g_nkeys;
 static char g_config_path[512];
-#define MAX_OPTIONS 16
+#define MAX_OPTIONS 32
 static int g_opt[MAX_OPTIONS];
 
 static item g_items[MAX_ITEMS];

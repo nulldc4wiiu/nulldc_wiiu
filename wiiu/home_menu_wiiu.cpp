@@ -28,6 +28,7 @@ extern "C" bool wiiu_corner_tapped();
 extern "C" int get_controller_type(void);                           // 1: the light gun
 extern "C" int wiiu_gun_cross;                                      // drkMapleLightGun.cpp
 extern "C" int wiiu_rumble;
+extern "C" int wiiu_pad_shift;                                      // ogc_compat.cpp
 extern int wiiu_rumble_motors;                                      // rumble_wiiu.cpp
 void wiiu_label_draw(uint32_t *px, const char *s);                  // picker_wiiu.cpp
 // remapping (remap_wiiu.cpp)
@@ -294,7 +295,14 @@ static void settings_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, boo
         if (!wiiu_settings_set(path, wiiu_option_key(r), next.c_str()))
             printf("[home] couldn't save %s\n", path.c_str());
         else
+        {
             printf("[home] %s: %s=%s\n", path.c_str(), wiiu_option_key(r), next.empty() ? "(as all games)" : next.c_str());
+            if (!strcmp(wiiu_option_key(r), "pad1_p2"))
+            {
+                wiiu_pad_shift = (next == "on");
+                wiiu_rumble_stop();
+            }
+        }
     }
 }
 
@@ -384,6 +392,11 @@ static void quick_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *
             lines.push_back(std::string("Rumble:  ") + (wiiu_rumble_motors ? "on" : "off"));
             ids.push_back(3);
         }
+        if (get_controller_type() != 1)
+        {
+            lines.push_back(std::string("1st pad as Player 2:  ") + (wiiu_pad_shift ? "on" : "off"));
+            ids.push_back(4);
+        }
         if (lines.empty())
         {
             lines.push_back("Nothing here with these settings (fast_forward, rumble, the light gun)");
@@ -397,7 +410,8 @@ static void quick_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *
             "does the same while held. The sound is off meanwhile.",
             "How fast fast-forward runs. Dreamcast games mostly can't go far past 2x on the Wii U.",
             "The light gun's aim marks for the Wii Remotes (red gun 1, blue gun 2). Touch aims show none.",
-            "The motors of the GamePad and the Pro Controllers, for games that use the Puru Puru (Jump) Pack." };
+            "The motors of the GamePad and the Pro Controllers, for games that use the Puru Puru (Jump) Pack.",
+            "Off: GamePad and 1st controller share Player 1. On: GamePad is Player 1 and 1st controller becomes Player 2 (2nd=P3, 3rd=P4)." };
         const int r = run_page(px, w, h, (int)rows.size(), sel, [&](uint32_t *p, int s) {
             wiiu_menu_draw(p, "Quick settings (for this run)", rows.data(), (int)rows.size(), s,
                            ids[s] >= 0 ? help[ids[s]] : "B: back.");
@@ -411,6 +425,10 @@ static void quick_page(std::vector<uint32_t> &px, uint32_t w, uint32_t h, bool *
         case 1: wiiu_ffwd = wiiu_ffwd == 2 ? 3 : wiiu_ffwd == 3 ? 0 : 2; break;
         case 2: wiiu_gun_cross = !wiiu_gun_cross; break;
         case 3: wiiu_rumble_motors = !wiiu_rumble_motors; break;
+        case 4:
+            wiiu_pad_shift = !wiiu_pad_shift;
+            wiiu_rumble_stop();
+            break;
         }
         printf("[home] quick: %s\n", lines[r].c_str());
         if (ids[r] == 0)

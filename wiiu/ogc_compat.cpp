@@ -36,8 +36,17 @@ extern "C" void VIDEO_WaitVSync(void) { OSSleepTicks(OSMicrosecondsToTicks(16683
 extern "C" VIRetraceCallback VIDEO_SetPostRetraceCallback(VIRetraceCallback callback) { return nullptr; }
 
 // Wii Remotes, Classic and Pro Controllers: KPAD (kpad_wiiu.cpp) filling libogc's WPAD data
+extern "C" int get_controller_type(void);   // 1: the light gun
+extern "C" { int wiiu_pad_shift = 0; }      // 0: GamePad+Pad1 share P1; 1: GamePad=P1, Pad1=P2, Pad2=P3, Pad3=P4
 static WPADData wpad[4], no_wpad;
 static uint32_t wpad_held[4];
+
+static int map_wpad_chan(int chan)
+{
+    if (wiiu_pad_shift && get_controller_type() != 1)
+        return chan - 1;
+    return chan;
+}
 static uint32_t ir_w[4] = { 640, 640, 640, 640 }, ir_h[4] = { 480, 480, 480, 480 };   // WPAD_SetVRes
 static bool kpad_ready;
 
@@ -58,6 +67,9 @@ extern "C" int32_t WPAD_ScanPads(void)
         wiiu_kpad_init();
         kpad_ready = true;
     }
+    no_wpad = {};
+    no_wpad.err = -1;
+    for (int c = 0; c < 4; c++)
     for (int c = 0; c < 4; c++)
     {
         static WiiuPad pad[4];
@@ -89,8 +101,16 @@ extern "C" int32_t WPAD_ScanPads(void)
     }
     return 0;
 }
-extern "C" uint32_t WPAD_ButtonsHeld(int chan) { return chan >= 0 && chan < 4 ? wpad_held[chan] : 0; }
-extern "C" WPADData *WPAD_Data(int chan) { return chan >= 0 && chan < 4 ? &wpad[chan] : &no_wpad; }
+extern "C" uint32_t WPAD_ButtonsHeld(int chan)
+{
+    const int c = map_wpad_chan(chan);
+    return c >= 0 && c < 4 ? wpad_held[c] : 0;
+}
+extern "C" WPADData *WPAD_Data(int chan)
+{
+    const int c = map_wpad_chan(chan);
+    return c >= 0 && c < 4 ? &wpad[c] : &no_wpad;
+}
 extern "C" int32_t WPAD_SetDataFormat(int chan, int fmt)
 {
     // a format with IR turns the pointer on
