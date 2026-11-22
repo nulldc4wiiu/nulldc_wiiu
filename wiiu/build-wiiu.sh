@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 
 echo ">> building nulldc.wuhb"
 /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S wiiu -B build-wiiu -G Ninja -DCMAKE_BUILD_TYPE=Release
+cp apps/apps/nulldc4wii/data/fsca-table.bin build-wiiu/content/fsca-table.bin
 ninja -C build-wiiu
 
 echo ">> assembling wiiu/release/"

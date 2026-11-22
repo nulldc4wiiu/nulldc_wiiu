@@ -29,6 +29,7 @@
 #include "tmu.h"
 #include "dc/mem/sh4_mem.h"
 #include "ccn.h"
+#include <math.h>
 #include "sh4_sched.h"   // SCHED preset: unified cycle-deadline event scheduler
 
 // SCHED preset accessor (wii/main.cpp). When on, migrated completion/IRQ events
@@ -252,21 +253,32 @@ void GenerateSinCos()
 	free(path);
 
 	if (!tbl)
-		die("fsca-table.bin is missing!");
+		tbl = fopen("fs:/vol/content/fsca-table.bin", "rb");
 
-	fread(sin_table, sizeof(f32), 0x8000, tbl);
-	fclose(tbl);
+	if (tbl)
+	{
+		fread(sin_table, sizeof(f32), 0x8000, tbl);
+		fclose(tbl);
 
-	// Endian-swap the loaded half (no-op on big-endian / Wii)
-	for (int i = 0; i < 0x8000; i++)
-		(u32&)sin_table[i] = host_to_le<4>((u32&)sin_table[i]);
+		// Endian-swap the loaded half
+		for (int i = 0; i < 0x8000; i++)
+			(u32&)sin_table[i] = host_to_le<4>((u32&)sin_table[i]);
+	}
+	else
+	{
+		printf("fsca-table.bin not found, generating sin_table in memory...\n");
+		for (int i = 0; i < 0x8000; i++)
+			sin_table[i] = (f32)sin((double)i * (3.14159265358979323846 / 32768.0));
+		sin_table[0] = 0.0f;
+		sin_table[0x4000] = 1.0f;
+	}
 
 	// Mirror: second half of the unit circle (sin is antisymmetric)
-	sin_table[0x8000] = 0.0f;                    // sin(π) == 0 exactly
+	sin_table[0x8000] = 0.0f;            // sin(π) == 0 exactly
 	for (int i = 0x8001; i < 0x10000; i++)
 		sin_table[i] = -sin_table[i - 0x8000];
 
-	// Overlap region for cos: copy [0..0x3FFF] → [0x10000..0x13FFF]
+	// Overlap region for cos: copy [0..0x3FFF] -> [0x10000..0x13FFF]
 	for (int i = 0x10000; i < 0x14000; i++)
 		sin_table[i] = sin_table[i & 0xFFFF];
 }
