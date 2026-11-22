@@ -60,7 +60,7 @@ Want to help expand the catalog? Every run automatically appends performance sta
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 Downloads are available on the **[Releases](https://github.com/nulldc4wiiu/nulldc_wiiu/releases)** page. **No Dreamcast BIOS or game files are included** — you must provide your own dumps.
 
@@ -84,3 +84,25 @@ sd:/
         └── Skies of Arcadia/
             ├── Skies of Arcadia (Disc 1).gdi
             └── Skies of Arcadia (Disc 2).gdi
+```
+
+## Documentation
+
+README-WiiU.md	- Full Wii U guide: installation, controls, and features
+RELEASE-NOTES-WiiU.md	- Changelog and highlights by release
+BENCHES-WiiU.md	- Hardware speed benchmarks per game
+KNOWN-ISSUES-WiiU.md - Known bugs and per-game issues
+SETTINGS-WiiU.md - Reference for every menu and config setting
+DESIGN-WiiU.md - Architecture notes, performance work, and roadmap
+BUILDING-WiiU.md - Instructions for building from source with devkitPro / Docker
+README-Wii.md - Original nullDC4Wii README kept for reference (Wii only, not Wii U)
+
+## Credits & License
+
+Core Wii U Port & Engine: perfcrash26
+
+GamePad VMU, UI Enhancements, Release Management & Wiki: ClaudiWolf2056
+
+Community Hardware Testing & Benchmarks: Zeox gamer, sunspot01, A$AP VENUM, David Hernandez
+
+Original Emulator Base: The nullDC and nullDC4Wii teams (with Xale)
