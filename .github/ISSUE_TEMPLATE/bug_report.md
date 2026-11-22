@@ -21,3 +21,5 @@ developers upstream. Do not attach or link BIOS files or game images.
 **Options page settings** (graphics core, sound core, 3D resolution, anything you changed):
 
 **Controller(s)** (GamePad, Pro Controller, Wii Remote, light gun):
+
+**Optional (very helpful)**: Attach a Save State file from sd:/wiiu/nulldc/ taken right before the bug or slowdown
