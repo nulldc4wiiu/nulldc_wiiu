@@ -53,7 +53,10 @@ bool wiiu_pick_game(const char *home, char *path, size_t size);
 void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
                                bool *code_check, int *sound_buffer_ms, int *disc_kbps);
 void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *render_width, bool *keep_pitch);
+void wiiu_picker_extra_options(const char *home, int *ratio, int *cable, int *frameskip, int *render_delay);
+int wiiu_picker_vmu_mode(const char *home);
 void wiiu_gx2_set_render_width(int width);   // present_gx2.cpp
+void wiiu_gx2_set_vmu_mode(int mode);        // present_gx2.cpp
 extern float wiiu_audio_min_speed;          // audio_wiiu.cpp
 static bool rt_width_set;                    // wiiu.cfg set rt_width: it wins over the picker's option
 void wiiu_kpad_init();
@@ -167,6 +170,7 @@ void wiiu_audio_shutdown();
 extern "C" int g_fastmem_preset, g_dynarec_preset, g_idle_shinobi_preset, g_controller_type;
 extern "C" int g_bcache_preset, g_jit_align_preset, g_jit_sbp_preset;
 extern "C" int g_gdrom_delay;   // presets_generated.cpp: GD-DMA pacing in KB/s (dc/gdrom/gdromv3.cpp), the options page's Disc speed
+extern "C" int g_ratio_preset, g_cable_preset, g_frameskip_preset, g_render_delay_preset;
 extern u32 wiiu_ta_sq_blocks, wiiu_ta_dma_blocks;   // render_gx2.cpp: how the game feeds the TA
 extern int g_exp_sq_fast, g_exp_aica_thread;
 extern int wiiu_mv_bbox, wiiu_mv_bbox_check;   // present_gx2.cpp
@@ -525,12 +529,23 @@ static void load_wiiu_cfg()
 static void write_summary(int seconds)
 {
     printf("[wiiu] run ended after %d s\n", seconds);
+    const float avg_fps = seconds > 0 ? (float)wiiu_renders / (float)seconds : 0.0f;
+    const float avg_vbl = seconds > 0 ? (float)wiiu_vblanks / (float)seconds : 0.0f;
+    const char *game = strrchr(selectedFilePath, '/');
+    game = game ? game + 1 : (selectedFilePath[0] ? selectedFilePath : "BIOS (no disc)");
+
     if (FILE *f = fopen(NULLDC_HOME "last_run.txt", "w"))
     {
-        fprintf(f, "file '%s' dynarec %d: %d s, vblanks %u renders %u", selectedFilePath, g_dynarec_preset, seconds,
-                wiiu_vblanks, wiiu_renders);
-        fprintf(f, "\n");
+        fprintf(f, "game '%s' | time %d s | avg FPS: %.1f (vblanks/s: %.1f) | res: %dx%d | fastmem: %d | fskip: %d\n",
+                game, seconds, avg_fps, avg_vbl, wiiu_rt_width, wiiu_rt_width * 3 / 4, g_fastmem_preset, g_frameskip_preset);
         fclose(f);
+    }
+    if (FILE *b = fopen(NULLDC_HOME "benchmarks.txt", "a"))
+    {
+        fprintf(b, "%-40s | %4d s | Avg FPS: %5.1f | VBl/s: %5.1f | Res: %dx%d | Fastmem: %d | FSkip: %d | RDelay: %d\n",
+                game, seconds, avg_fps, avg_vbl, wiiu_rt_width, wiiu_rt_width * 3 / 4,
+                g_fastmem_preset, g_frameskip_preset, g_render_delay_preset);
+        fclose(b);
     }
 }
 
@@ -771,11 +786,15 @@ static int app_main()
         if (!rt_width_set)
             wiiu_gx2_set_render_width(opt_width);
         wiiu_audio_min_speed = opt_keep_pitch ? 0.97f : 0.60f;
-        printf("[wiiu] options: fastmem %d%s, light gun %s%s, 3D %dx%d%s, sound when slow: %s\n", g_fastmem_preset,
-               fastmem >= 0 ? " (wiiu.cfg)" : "", g_controller_type == 1 ? "on" : "off",
+        wiiu_picker_extra_options(home, &g_ratio_preset, &g_cable_preset, &g_frameskip_preset, &g_render_delay_preset);
+        const int vmu_mode = wiiu_picker_vmu_mode(home);
+        wiiu_gx2_set_vmu_mode(vmu_mode);
+        printf("[wiiu] options: fastmem %d%s, light gun %s%s, 3D %dx%d%s, sound when slow: %s, ratio: %d, cable: %d, fskip: %d, rdelay: %d, vmu: %d\n",
+               g_fastmem_preset, fastmem >= 0 ? " (wiiu.cfg)" : "", g_controller_type == 1 ? "on" : "off",
                controller_type_set ? " (wiiu.cfg)" : "", rt_width_set ? wiiu_rt_width : opt_width,
                (rt_width_set ? wiiu_rt_width : opt_width) * 3 / 4, rt_width_set ? " (wiiu.cfg)" : "",
-               opt_keep_pitch ? "keeps pitch" : "slows down");
+               opt_keep_pitch ? "keeps pitch" : "slows down", g_ratio_preset, g_cable_preset, g_frameskip_preset,
+               g_render_delay_preset, vmu_mode);
     }
     printf("[wiiu] file '%s'\n", selectedFilePath);
 

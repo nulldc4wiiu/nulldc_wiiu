@@ -95,11 +95,28 @@ struct MapleConfigMap : IMapleConfigMap
 		pjs->trigger[PJTI_L] = lt[dev->bus_id];
 	}
 
-	void SetImage(void* /*img*/) override
-	{
-		// VMU screen image upload — not implemented for Wii input backend
-	}
+	void SetImage(void* img) override;
 };
+
+u8 g_vmu_lcd_bits[48 * 32];
+volatile u32 g_vmu_lcd_seq = 0;
+
+void MapleConfigMap::SetImage(void* img)
+{
+	if (!dev || !img || dev->bus_id != 0 || dev->bus_port != 0)
+		return;
+	const u8* src = static_cast<const u8*>(img);
+	// In maple_devs.cpp, X is already flipped for controller orientation, while Y=0 is the bottom row.
+	// Flip Y (31 - y) so the 48x32 LCD image is right-side up on screen.
+	for (int y = 0; y < 32; y++)
+	{
+		const u8* srow = src + (31 - y) * 48;
+		u8* drow = g_vmu_lcd_bits + y * 48;
+		for (int x = 0; x < 48; x++)
+			drow[x] = (srow[x] == 0) ? 1 : 0;   // 1 = pixel ON (dark), 0 = pixel OFF (LCD background)
+	}
+	g_vmu_lcd_seq = g_vmu_lcd_seq + 1;
+}
 
 // ----------------------------------------------------------------------------
 // Device factory helpers

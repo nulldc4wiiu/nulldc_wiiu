@@ -31,23 +31,44 @@ namespace
 u32 read_buttons()
 {
     u32 b = 0;
+    static VPADStatus s_vs;
+    static bool s_have_vs = false;
+    static int s_stick_dir = 0;   // -1 up, 0 neutral, +1 down (with hysteresis)
     VPADStatus vs;
-    VPADReadError ve;
+    VPADReadError ve = VPAD_READ_UNINITIALIZED;
     if (VPADRead(VPAD_CHAN_0, &vs, 1, &ve) == 1 && ve == VPAD_READ_SUCCESS)
     {
-        if (vs.hold & (VPAD_BUTTON_UP | VPAD_STICK_L_EMULATION_UP))
-            b |= PICKER_BTN_UP;
-        if (vs.hold & (VPAD_BUTTON_DOWN | VPAD_STICK_L_EMULATION_DOWN))
-            b |= PICKER_BTN_DOWN;
-        if (vs.hold & VPAD_BUTTON_A)
+        s_vs = vs;
+        s_have_vs = true;
+    }
+    if (s_have_vs)
+    {
+        const float ly = s_vs.leftStick.y;
+        if (s_stick_dir == 0)
+            s_stick_dir = (ly > 0.55f) ? -1 : (ly < -0.55f) ? 1 : 0;
+        else if ((s_stick_dir == -1 && ly < 0.30f) || (s_stick_dir == 1 && ly > -0.30f))
+            s_stick_dir = 0;
+
+        const bool in_opts = picker_core_view()->options != 0;
+        const u32 trig = s_vs.trigger;
+        const u32 active = trig ? trig : s_vs.hold;
+
+        if ((active & (VPAD_BUTTON_A | (in_opts ? (VPAD_BUTTON_RIGHT | VPAD_BUTTON_LEFT) : 0))))
             b |= PICKER_BTN_ACCEPT;
-        if (vs.hold & VPAD_BUTTON_Y)
-            b |= PICKER_BTN_HELP;
-        if (vs.hold & VPAD_BUTTON_X)
-            b |= PICKER_BTN_OPTIONS;
-        if (vs.hold & VPAD_BUTTON_B)
+        else if (active & VPAD_BUTTON_B)
             b |= PICKER_BTN_BACK;
-        if ((vs.hold & (VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS)) == (VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS))
+        else if (active & VPAD_BUTTON_X)
+            b |= PICKER_BTN_OPTIONS;
+        else if (active & VPAD_BUTTON_Y)
+            b |= PICKER_BTN_HELP;
+        else
+        {
+            if ((active & VPAD_BUTTON_UP) || s_stick_dir == -1)
+                b |= PICKER_BTN_UP;
+            if ((active & VPAD_BUTTON_DOWN) || s_stick_dir == 1)
+                b |= PICKER_BTN_DOWN;
+        }
+        if ((s_vs.hold & (VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS)) == (VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS))
             b |= PICKER_BTN_QUIT_COMBO;
     }
     for (int c = 0; c < 4; c++)
@@ -80,6 +101,14 @@ u32 read_buttons()
 
 const u32 W = 960, H = 720, MARGIN = 28;   // shown 4:3; Roboto from font_roboto.h (make_font.py)
 const u32 BG = 0x102040FF, FG = 0xE0E0E0FF, HILITE = 0xFFE060FF, DIM = 0x9090A0FF;
+const u32 ROW_SEL = 0x1E3A6EFF, LINE_COL = 0x2A4A80FF, WARN_COL = 0xFF8040FF;
+
+void fill_rect(u32 *px, u32 rx, u32 ry, u32 rw, u32 rh, u32 color)
+{
+    for (u32 y = ry; y < ry + rh && y < H; y++)
+        for (u32 x = rx; x < rx + rw && x < W; x++)
+            px[y * W + x] = color;
+}
 
 u32 text_width(const char *s)
 {
@@ -153,27 +182,50 @@ int options_count();
 const char *option_label(int i);
 const char *option_help(int i);
 
+void draw_header_status(u32 *px)
+{
+    text(px, MARGIN, 1, "nullDC for Wii U  " NULLDC_WIIU_VERSION, HILITE);
+    const bool lgun = picker_core_option(1) == 1;
+    const int vmu = picker_core_option(15);
+    const char *status = lgun ? "[!] FORCE LIGHT GUN ON" :
+                         (vmu == 2 ? "VMU: GamePad Dedicated" :
+                          vmu == 1 ? "VMU: GamePad Corner" : "VMU: Off");
+    const u32 sw = text_width(status);
+    if (sw + MARGIN < W)
+        text(px, W - MARGIN - sw, 1, status, lgun ? WARN_COL : DIM);
+    fill_rect(px, MARGIN, 2 * FONT_LINE - 6, W - MARGIN * 2, 2, LINE_COL);
+}
+
 void draw(u32 *px)
 {
     const picker_view &v = *picker_core_view();
     for (u32 i = 0; i < W * H; i++)
         px[i] = BG;
-    text(px, MARGIN, 1, "nullDC for Wii U  " NULLDC_WIIU_VERSION, HILITE);
+    draw_header_status(px);
     if (v.options)
     {
-        text(px, MARGIN, 3, "Options", HILITE);
+        text(px, MARGIN, 2, "Options   (A / Left-Right: change   B: back to games)", DIM);
         const int n = options_count();
-        for (int i = 0; i < n; i++)
+        const int max_vis = 11;
+        int top = v.opt_sel - max_vis / 2;
+        if (top > n - max_vis) top = n - max_vis;
+        if (top < 0) top = 0;
+        const int vis = (n < max_vis) ? n : max_vis;
+        for (int k = 0; k < vis; k++)
         {
-            char line[64];
+            const int i = top + k;
+            const u32 r = 3 + k;
+            if (i == v.opt_sel)
+                fill_rect(px, MARGIN - 8, r * FONT_LINE + 4, W - (MARGIN - 8) * 2, FONT_LINE, ROW_SEL);
+            char line[80];
             snprintf(line, sizeof(line), "%s%s: %s", i == v.opt_sel ? "> " : "   ", option_label(i),
                      picker_core_option_value(i));
-            text(px, MARGIN, 5 + i, line, i == v.opt_sel ? HILITE : FG);
+            text(px, MARGIN, r, line, i == v.opt_sel ? HILITE : FG);
         }
-        u32 row = 6 + n;
+        u32 row = 4 + vis;
+        fill_rect(px, MARGIN, row * FONT_LINE - 4, W - MARGIN * 2, 2, LINE_COL);
         if (option_help(v.opt_sel))
             row += text_wrapped(px, MARGIN, row, option_help(v.opt_sel), FG);
-        text(px, MARGIN, row + 1, "A change   B back   (all games)", DIM);
     }
     else if (v.help)
     {
@@ -190,13 +242,16 @@ void draw(u32 *px)
     }
     else
     {
-        text(px, MARGIN, 2, "A start   Y help   X options   hold + and - to quit", DIM);
+        text(px, MARGIN, 2, "A: start   X: options   Y: help   hold + and -: quit", DIM);
         for (int i = 0; i < v.visible && v.top + i < v.count; i++)
         {
             const int idx = v.top + i;
+            const u32 r = 4 + i;
+            if (idx == v.sel)
+                fill_rect(px, MARGIN - 8, r * FONT_LINE + 4, W - (MARGIN - 8) * 2, FONT_LINE, ROW_SEL);
             char line[128];
             snprintf(line, sizeof(line), "%s%.90s", idx == v.sel ? "> " : "   ", picker_core_entry(idx)->name);
-            text(px, MARGIN, 4 + i, line, idx == v.sel ? HILITE : FG);
+            text(px, MARGIN, r, line, idx == v.sel ? HILITE : FG);
         }
         char count[24];
         snprintf(count, sizeof(count), "%d / %d", v.sel + 1, v.count);
@@ -204,11 +259,30 @@ void draw(u32 *px)
     }
     wiiu_gx2_show_ui(px, W, H);
 }
+
+void draw_loading_popup(u32 *px)
+{
+    const char *msg = "Loading...";
+    const u32 mid_row = (H / FONT_LINE) / 2;
+    const u32 bw = 320, bh = FONT_LINE + 36;
+    const u32 bx = (W - bw) / 2;
+    const u32 by = mid_row * FONT_LINE - 14;
+    fill_rect(px, bx - 3, by - 3, bw + 6, bh + 6, HILITE);
+    fill_rect(px, bx, by, bw, bh, 0x0A152BFF);
+    const u32 tx = (W - text_width(msg)) / 2;
+    text(px, tx, mid_row, msg, HILITE);
+    wiiu_gx2_show_ui(px, W, H);
+}
 // Options page (picker_core); main_wiiu.cpp reads them with wiiu_picker_options, picker shown or not
 const char *const on_off[] = { "on", "off" }, *const off_on[] = { "off", "on" };
 const char *const sizes[] = { "960x720", "640x480" }, *const slow_sound[] = { "slows down", "keeps pitch" };
 const char *const sound_buf[] = { "100 ms", "46 ms" };
 const char *const disc_speed[] = { "4x drive", "real drive", "instant" };
+const char *const ratios[] = { "4:3 original", "16:9 fullscreen" };
+const char *const cables[] = { "VGA (480p 60Hz)", "Composite", "RGB SCART" };
+const char *const fskips[] = { "0 (off)", "1", "2", "auto", "auto max" };
+const char *const rdelays[] = { "flycast (auto)", "on (hw-like)", "off (instant)" };
+const char *const vmu_modes[] = { "off", "corner (bottom-left)", "gamepad dedicated" };
 const picker_option options[] = {
     { "fastmem", "Fast memory",
       "Dreamcast memory mapped straight into the Wii U's: about 12% faster in 3D games. Turn it off if a game "
@@ -246,6 +320,21 @@ const picker_option options[] = {
       "How fast the emulated disc drive reads. 4x drive: loads take a quarter of a real Dreamcast's time, without "
       "the pauses. Real drive: as on a Dreamcast. Instant: shortest loads, but the game freezes for a moment as it "
       "loads. Next start.", disc_speed, 3, 0 },
+    { "ratio", "Aspect ratio",
+      "4:3 original keeps the Dreamcast proportion with side bars; 16:9 stretches to fill the screen.",
+      ratios, 2, 0 },
+    { "cable", "Video cable",
+      "VGA forces 480p 60Hz progressive (best). Switch to Composite or RGB if a non-VGA game refuses to boot.",
+      cables, 3, 0 },
+    { "frameskip", "Frameskip",
+      "Drops renders when behind real time so game speed stays at 100%. Use auto on heavy scenes.",
+      fskips, 5, 0 },
+    { "render_delay", "Render IRQ timing",
+      "Flycast (default) paces render-done IRQs by scene size. Use 'on' for MvC2/CvS2 if framerate drops.",
+      rdelays, 3, 0 },
+    { "vmu_screen", "VMU on GamePad",
+      "Off: hidden. Corner: small VMU in bottom-left of GamePad. Dedicated: full VMU + FPS on GamePad while TV shows the game.",
+      vmu_modes, 3, 1 },
 };
 int options_count() { return (int)(sizeof(options) / sizeof(options[0])); }
 const int WIIU_GAME_OPTIONS = 4;   // fastmem, lightgun, render, slow_sound: read after the game is chosen
@@ -481,6 +570,23 @@ void wiiu_picker_options(const char *home, bool *fastmem, bool *lightgun, int *r
     *keep_pitch = picker_core_option(3) == 1;
 }
 
+void wiiu_picker_extra_options(const char *home, int *ratio, int *cable, int *frameskip, int *render_delay)
+{
+    setup(home);
+    *ratio = picker_core_option(11);          // 0: 4:3, 1: 16:9
+    const int c = picker_core_option(12);     // 0: VGA(2), 1: Composite(0), 2: RGB(1)
+    *cable = (c == 0) ? 2 : (c == 1) ? 0 : 1;
+    *frameskip = picker_core_option(13);      // 0..4
+    const int rd = picker_core_option(14);    // 0: flycast(2), 1: on(1), 2: off(0)
+    *render_delay = (rd == 0) ? 2 : (rd == 1) ? 1 : 0;
+}
+
+int wiiu_picker_vmu_mode(const char *home)
+{
+    setup(home);
+    return picker_core_option(15);   // 0: off, 1: corner (bottom-left), 2: gamepad dedicated
+}
+
 // the speed settings, read at startup (before the threads exist), from the same config.txt
 void wiiu_picker_speed_options(const char *home, bool *gfx_core, bool *sound_core, bool *jit_fast, bool *smooth,
                                bool *code_check, int *sound_buffer_ms, int *disc_kbps)
@@ -523,10 +629,20 @@ bool wiiu_pick_game(const char *home, char *path, size_t size)
     std::vector<u32> px(W * H);
     bool chosen = false;
     picker_view shown = {};
+    u32 prev_btns = ~0u;
     bool first = true;
     while (wiiu_app_running())
     {
-        const int ev = picker_core_input(read_buttons(), (unsigned)OSTicksToMilliseconds(OSGetSystemTime()));
+        const u32 btns = read_buttons();
+        const u32 pressed = btns & ~prev_btns;
+        prev_btns = btns;
+        if (picker_core_view()->options && (pressed & PICKER_BTN_ACCEPT))
+        {
+            draw_loading_popup(px.data());
+            wiiu_gx2_frame();   // presenta "Loading..." antes de escribir config.txt en la SD
+            first = true;       // redibuja el menú actualizado apenas termina de guardar
+        }
+        const int ev = picker_core_input(btns, (unsigned)OSTicksToMilliseconds(OSGetSystemTime()));
         if (ev == PICKER_QUIT)
             break;
         if (ev == PICKER_CHOSE)
