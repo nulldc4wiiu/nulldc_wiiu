@@ -293,6 +293,7 @@ static void stop_emulator(OSThread *thread)
     if (!emu_running)
         return;
     printf("[wiiu] stopping the emulator\n");
+    emu_pause_req = false;   // despierta al emulador si estaba pausado por el menú HOME
     void wiiu_disc_quiesce();
     wiiu_disc_quiesce();
     void wiiu_rumble_stop();
@@ -850,10 +851,10 @@ static int app_main()
     }
     while (wiiu_app_running())
     {
-        if (video)
+        if (video && !done)
             wiiu_gx2_frame();   // waits for VSync
         else
-            OSSleepTicks(OSMillisecondsToTicks(100));
+            OSSleepTicks(OSMillisecondsToTicks(done ? 10 : 100));
         if (emu_running && !done)
         {
             wiiu_rumble_tick(wiiu_vblanks);

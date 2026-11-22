@@ -326,12 +326,18 @@ void wiiu_gx2_show_menu(const u32 *px, u32 w, u32 h)
     wiiu_gx2_show_ui(px, w, h);
     ui_overlay = true;
 }
+extern bool wiiu_gfx_down;   // main_wiiu.cpp
 void wiiu_gx2_hide_ui()
 {
     ui_overlay = false;
     if (!ui_tex.surface.image)
         return;
     ui_active = false;
+    if (wiiu_gfx_down)
+    {
+        ui_tex = {};
+        return;
+    }
     GX2DrawDone();
     GX2RDestroySurfaceEx(&ui_tex.surface, (GX2RResourceFlags)0);
     ui_tex = {};
