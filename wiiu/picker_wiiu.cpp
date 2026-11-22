@@ -41,6 +41,10 @@ u32 read_buttons()
         s_vs = vs;
         s_have_vs = true;
     }
+    else if (s_have_vs)
+    {
+        s_vs.trigger = 0;
+    }
     if (s_have_vs)
     {
         const float ly = s_vs.leftStick.y;
