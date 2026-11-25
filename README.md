@@ -29,6 +29,16 @@
 
 ---
 
+## Support
+
+`nullDC4WiiU` is and will always remain 100% free and open source (based on SKMP & BenoitAdam's `nullDC4Wii`, with the native Wii U core by `perfcrash`).
+
+If my releases, console testing, guides, or community support helped you enjoy Dreamcast on Wii U and you'd like to support my maintenance work voluntarily:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/TU_USUARIO)
+
+---
+
 ## Key Features
 
 - **Native GX2 & Multi-Core Architecture:** Hardware-accelerated PowerVR2 rendering on Wii U's GX2 API, SH-4 PowerPC JIT with fastmem, dual-core graphics intake/vertex conversion, and dedicated audio mixing with per-voice AICA low-pass filtering.
