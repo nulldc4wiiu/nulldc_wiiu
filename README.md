@@ -68,28 +68,29 @@ Downloads are available on the **[Releases](https://github.com/nulldc4wiiu/nulld
 2. Copy your Dreamcast BIOS files (`dc_boot.bin` and `dc_flash.bin`) into the `data/` folder.
 3. Place your games (`.gdi`, `.cdi`, `.mds`, or `.elf`) inside `sd:/wiiu/nulldc/` (at most one subfolder deep).
 
-# Quick Start Guide and Frequently Asked Questions (FAQ) — nullDC4WiiU
+## Quick Setup & SD Card Folder Structure
 
-## 1. Exact Folder Structure on the SD Card
+The most common setup mistake is placing `data/` or games inside `sd:/wiiu/apps/nulldc/` instead of `sd:/wiiu/nulldc/`. Make sure your SD card matches this layout:
 
-The most common mistake during installation is confusing the application folder (`apps`) with the data and games folder (`nulldc`). Your SD card must look **exactly** like this:
-
+```text
 sd:/
-├── wiiu/
-│   ├── apps/
-│   │   └── nulldc/
-│   │       └── nulldc.wuhb              <-- The emulator (for Aroma only)
-│   └── nulldc/
-│       ├── data/
-│       │   ├── dc_boot.bin              <-- Your Dreamcast BIOS (in lowercase)
-│       │   ├── dc_flash.bin             <-- Your Dreamcast Flash (in lowercase)
-│       │   └── vmu_save_A1.bin          <-- Created automatically during gameplay
-│       ├── Sonic Adventure/
-│       │   ├── Sonic Adventure.gdi
-│       │   ├── track01.bin
-│       │   └── track02.raw
-│       └── Marvel vs Capcom 2/
-│           └── MvC2.cdi
+└── wiiu/
+    ├── apps/
+    │   └── nulldc/
+    │       └── nulldc.wuhb              # Emulator binary (Aroma only)
+    └── nulldc/
+        ├── data/
+        │   ├── dc_boot.bin              # Your Dreamcast BIOS (lowercase)
+        │   ├── dc_flash.bin             # Your Dreamcast Flash (lowercase)
+        │   └── vmu_save_A1.bin          # Created automatically on first boot
+        ├── Sonic Adventure/
+        │   ├── Sonic Adventure.gdi
+        │   ├── track01.bin
+        │   └── track02.raw
+        └── Marvel vs Capcom 2/
+            └── MvC2.cdi
+
+```
 
 > **Golden Rule:** Do not create nested folders like `sd:/wiiu/nulldc/Games/Fighting/MvC2/`. The file selector only searches up to 2 levels deep within `sd:/wiiu/nulldc/`.
 
