@@ -98,40 +98,98 @@ sd:/
 
 ## 2. Frequently Asked Questions
 
-### I get a "BIOS NOT FOUND" error, even though I’ve already copied the files
-* Verify that they are located in `sd:/wiiu/nulldc/data/` and **not** inside `sd:/wiiu/apps/nulldc/data/`.
-* Ensure the filenames are entirely in lowercase: `dc_boot.bin` and `dc_flash.bin` (and check that there are no double file extensions, such as `.bin.bin`). ### The emulator doesn't recognize my game (or shows "no disc")
-* **Currently supported formats:** `.gdi`, `.cdi`, `.mds`, and `.elf` (uncompressed). `.chd`, `.zip`, `.7z`, and raw `.cue`/`.bin` files are **not** supported.
-* **Lowercase file extensions:** If your file ends in uppercase `.GDI` or `.CDI`, rename it to use lowercase extensions.
-* **`.gdi` files:** All `track*.bin` / `.raw` files must be in the same folder as the `.gdi` file, and their filenames must match those listed when opening the `.gdi` file in a text editor (like Notepad).
-* If you converted a Redump dump (`.cue`/`.bin`), simply renaming the files is not enough; you must use a dedicated `.gdi` converter or obtain a native `.gdi`/`.cdi` dump.
+### BIOS Files
 
-### How do I play with 2 players? (Both controllers control Player 1)
-Starting with version **`v0.800-U2.2`**, enable the option **`1st pad as Player 2: on`**:
-* You can enable this in the **Options** menu (from the main menu) or while playing any game via **HOME → Quick settings**.
-* **Off (default):** The GamePad and the first external controller both act as Player 1 (ideal for playing solo with a Pro Controller).
-* **On:** The GamePad acts as Player 1, and your first external controller (Pro Controller, Classic Controller, or Wii Remote) becomes Player 2.
+- Make sure `dc_boot.bin` and `dc_flash.bin` are inside **`sd:/wiiu/nulldc/data/`** — **not** inside `sd:/wiiu/apps/nulldc/data/`.
+- Filenames must be **all lowercase** (`dc_boot.bin`, `dc_flash.bin`).
+- If you are on Windows with file extensions hidden, verify they aren't accidentally named `dc_boot.bin.bin`.
+- Since `v0.800-U2.1`, `fsca-table.bin` is bundled inside `nulldc.wuhb` — you do **not** need to supply it manually.
 
-### How do multi-disc games (like Shenmue or Code Veronica) work?
-* **For `.cdi` files:** Place all discs in the same folder and name them identically, changing only the disc identifier—e.g., `(Disc 1)`, `(Disc 2)`, etc. (e.g., `Shenmue (Disc 1).cdi`). When the game prompts you to change the disc, press **HOME → Change disc**.
-* **For `.gdi` files:** If different discs contain tracks with identical filenames (e.g., `track01.bin`), place each disc in its own separate folder to prevent them from overwriting one another. When you finish a disc, save your progress to the VMU, then load the next disc via the selector (the VMU is shared across all discs).
+---
 
-### A game runs slowly or takes a long time to load (especially Atomiswave ports)
-Try adjusting these settings under **Options**:
-* **3D resolution:** Change it from `960x720` to **`640x480`** (the original Dreamcast resolution; this cuts the GPU workload in half).
-* **Frameskip:** Set this to **`auto`** for demanding scenes.
-* **Disc speed:** If black loading screens take too long (as seen in *KOF Neowave*), set this to **`instant`** (requires restarting the emulator).
+### Supported Game Formats & Game Detection
 
-### Why does the console freeze with certain games (e.g., *Sega Rally 2*, *Resident Evil 2*, *South Park*)?
-These games were built using **Windows CE**, which is currently unsupported and causes the Wii U to freeze. Please check the list on [WiiUBrew](https://wiiubrew.org/wiki/NullDC4WiiU) before attempting to play them.
+- **Supported formats:** `.gdi`, `.cdi`, `.mds`, and `.elf` (extracted). Compressed archives (`.zip`, `.7z`, `.rar`), `.chd`, and raw `.cue`/`.bin` dumps are **not** supported yet.
+- **Lowercase extensions:** Rename uppercase extensions like `.GDI` or `.CDI` to lowercase (`.gdi`, `.cdi`).
+- **Folder depth:** The game picker scans up to **2 levels** inside `sd:/wiiu/nulldc/`. Place your game folder directly under `sd:/wiiu/nulldc/`.
+- **`.gdi` files:** All `track*.bin` / `track*.raw` files must sit in the exact same folder as the `.gdi` file, and their filenames must match the entries inside the `.gdi` text file.
+- **Redump `.cue`/`.bin` sets:** Simply renaming `.cue`/`.bin` files to `.gdi` will fail with a "No disc" error. Use a proper Redump-to-GDI converter or a native `.gdi`/`.cdi` dump.
 
-### Will there be support for `.chd` files, USB, or cheats?
-* **`.chd`:** Along with performance improvements and split-screen support, this is a top priority for the next major core update (`U3`).
-* **USB and Cheats:** These are noted as potential future enhancements; no release date has been confirmed yet.
+---
 
-### How can I report a bug in a truly helpful way? 1. At the exact moment the graphical glitch or slowdown occurs, press **HOME** and create a **Save State** in Slot 1.
-2. Exit via **HOME → Quit to the Wii U Menu** so that `benchmarks.txt` is saved.
-3. Open an issue on GitHub, specifying the game, region, and format (`.gdi`/`.cdi`), and attach the Save State from `sd:/wiiu/nulldc/`.
+### Controller Configuration (Player 1 / Player 2)
+
+Update to **`v0.800-U2.2`** or newer and enable **`1st pad as Player 2`**:
+
+- You can toggle it permanently in the game picker under **Options**, or live mid-game via **HOME → Quick settings**.
+- **`off` (default):** GamePad and the 1st external controller share Player 1 (best for solo play with a Pro/Classic Controller).
+- **`on`:** GamePad is exclusively Player 1, and the 1st external controller (Pro Controller, Classic Controller, or Wii Remote) becomes Player 2 (`2nd = P3`, `3rd = P4`).
+
+---
+
+### Multi-Disc Games
+
+- **Live disc swapping (best for `.cdi`):** Put all discs in the **same folder** with identical filenames differing only by ` (Disc N)` — for example:
+  - `Shenmue (Disc 1).cdi`
+  - `Shenmue (Disc 2).cdi`
+  - `Shenmue (Disc 3).cdi`
+
+  When prompted to swap discs, press **HOME → Change disc** and pick the next disc.
+
+- **Multi-disc `.gdi` files:** Only put them in the same folder if their track filenames are unique. If each disc uses overlapping names (`track01.bin`, `track02.raw`), keep each disc in its own folder (`Shenmue 1/`, `Shenmue 2/`) so tracks don't overwrite each other. Save to the VMU at the end of Disc 1, then boot Disc 2 from the picker — VMU saves are shared across discs.
+
+---
+
+### Performance Settings
+
+Try these settings in **Options**:
+
+- **3D resolution → `640x480`:** Uses the Dreamcast's native resolution (half the GPU load of `960x720`), giving a big boost in heavy 3D titles like *Dead or Alive 2* and *Soulcalibur*.
+- **Frameskip → `auto`:** Keeps game speed steady during heavy scenes.
+- **Disc speed → `instant`:** Greatly shortens initial black screens and loading times in Atomiswave ports (such as *KOF Neowave*). Takes effect on next start.
+- **Render IRQ timing → `on (hw-like)`:** Helpful if games like *Marvel vs. Capcom 2* or *CvS2* suffer framerate drops.
+
+---
+
+### Windows CE Games
+
+Titles built on the **Windows CE SDK** are **not supported** and cause a hard console freeze requiring a power cycle.
+
+Always check the [WiiU Compatibility List](https://wiiubrew.org/wiki/NullDC4WiiU) before testing unknown games.
+
+---
+
+### Blue Screen / Crashes in Homebrew Games
+
+That blue screen is usually the homebrew port's own internal Dreamcast SH-4 exception handler (you will notice the VMU overlay is still active).
+
+Modern KallistiOS homebrew ports sometimes conflict with emulator speed hacks.
+
+Try turning **`Fast memory`** (`off`) and **`Faster CPU code`** (`off`) in **Options** for that title; if it still crashes, the port currently relies on behavior not yet supported by `nullDC`.
+
+---
+
+### Installation Requirements
+
+No — `nullDC4WiiU` is distributed as a `.wuhb` package and requires **Aroma**.
+
+---
+
+### Planned Features & Future Improvements
+
+- **`.chd` support, CPU optimizations, and split-screen flicker fixes (`#4`, `#6`):** Top priorities being investigated for the next major core update (`U3`).
+- **USB storage (`#5`) and Cheat support:** Tracked as possible future enhancements, with no ETA yet.
+
+---
+
+### Reporting Bugs & Performance Issues
+
+Save states are the fastest way to help us fix bugs and slowdowns:
+
+1. Make sure you are on the latest release.
+2. Right at the slowdown or graphical glitch, press **HOME** (or tap the top-right corner of the GamePad) and save a **Save State** to **Slot 1**.
+3. Exit cleanly via **HOME → Quit to the Wii U Menu** so `sd:/wiiu/nulldc/benchmarks.txt` is written.
+4. Open an issue on [GitHub Issues](https://github.com/nulldc4wiiu/nulldc_wiiu/issues) including the **game title, region, format** (`.gdi`/`.cdi`), any changed options, and attach the save state from `sd:/wiiu/nulldc/` (never upload BIOS files or game images).
 
 ## Documentation
 
