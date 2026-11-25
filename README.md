@@ -35,7 +35,7 @@
 
 If my releases, console testing, guides, or community support helped you enjoy Dreamcast on Wii U and you'd like to support my maintenance work voluntarily:
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/TU_USUARIO)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/claudiwolf2056)
 
 ---
 
